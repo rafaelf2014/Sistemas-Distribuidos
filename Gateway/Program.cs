@@ -95,11 +95,14 @@ class MyTcpListener
     {
         try
         {
+            string[] parts = data.Split('|');
+            parts[0] = "DATA_FORWARD"; // Altera o primeiro elemento
+            string modifiedData = string.Join("|", parts); // Junta tudo de novo com pipes
             using (TcpClient serverClient = new TcpClient("127.0.0.1", 14000))
             using (NetworkStream serverStream = serverClient.GetStream())
             using (StreamWriter writer = new StreamWriter(serverStream) { AutoFlush = true })
             {
-                writer.WriteLine(data);
+                writer.WriteLine(modifiedData);
                 Console.WriteLine("Dados encaminhados para o Servidor.");
             }
         }
