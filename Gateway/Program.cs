@@ -132,8 +132,17 @@ class MyTcpListener
 
                 string modifiedData = $"DATA_FORWARD|{gatewayId}|{sensorId}|{zona}|{tipoDado}|{valor}|{timestamp}";
 
-                _serverWriter.WriteLine(modifiedData);
-                Console.WriteLine("Dados encaminhados via conexão persistente.");
+                using (TcpClient serverClient = new TcpClient("127.0.0.1", 14000))
+                using (NetworkStream serverStream = serverClient.GetStream())
+                using (StreamReader reader = new StreamReader(serverStream))
+                using (StreamWriter writer = new StreamWriter(serverStream) { AutoFlush = true })
+                {
+                    writer.WriteLine(modifiedData);
+                    Console.WriteLine($"Dados encaminhados para o Servidor: {modifiedData}");
+
+                    string ackServer = reader.ReadLine();
+                    Console.WriteLine($"Resposta do servidor: {ackServer}");
+                }
             }
             else
             {
