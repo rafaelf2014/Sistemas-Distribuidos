@@ -39,7 +39,7 @@ namespace sensor
                         Console.WriteLine("\n ---------- Menu Sensor ----------");
                         Console.WriteLine("1 - Estabelecer Comunicação [HELLO]");
                         Console.WriteLine("2 - Enviar Dados [DATA_SEND]");
-                        Console.WriteLine("3 - Enviar HeartBeat [HEARTBEAT");
+                        Console.WriteLine("3 - Enviar HeartBeat [HEARTBEAT]");
                         Console.WriteLine("4 - Desligar [BYE]");
                         Console.WriteLine("\nEscolha uma opção");
 
@@ -47,7 +47,7 @@ namespace sensor
                         switch(option)
                         {
                             case "1":
-                                string msgHello = $"HELLO|{idSensor}|{dataTypes}]";
+                                string msgHello = $"HELLO|{idSensor}|[{dataTypes}]";
                                 writer.WriteLine(msgHello);
                                 Console.WriteLine($"[ENVIADO]: {msgHello}");
 
@@ -58,7 +58,7 @@ namespace sensor
                             case "2":
                                 string timestamp = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss");
 
-                                string msgData = $"DATA_SEND|{idSensor}|TEMP|{timestamp}";
+                                string msgData = $"DATA_SEND|{idSensor}|TEMP|25|{timestamp}";
                                 writer.WriteLine(msgData);
                                 Console.WriteLine($"[ENVIADO]: {msgData}");
 
