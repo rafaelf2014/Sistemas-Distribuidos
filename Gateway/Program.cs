@@ -12,7 +12,7 @@ class MyTcpListener
 
         try
         {
-            Int32 port = 13000;
+            Int32 port = 5000;
             IPAddress localAddr = IPAddress.Parse("127.0.0.1");
 
             //Crio o objeto TcpListener e o inicío
@@ -90,7 +90,7 @@ class MyTcpListener
     {
         try
         {
-            using TcpClient serverClient = new TcpClient("127.0.0.1", 14000);
+            using TcpClient serverClient = new TcpClient("127.0.0.1", 13000);
             using NetworkStream serverStream = serverClient.GetStream();
 
             byte[] dataToSend = Encoding.ASCII.GetBytes(data);
