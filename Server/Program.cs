@@ -95,7 +95,7 @@ class MyTcpListener
                     }
 
                     // Sending ACK back to Gateway
-                    writer.WriteLine("ACK_ForwardDATA | Status OK");
+                    writer.WriteLine("ACK_FORWARDDATA | STATUS OK");
                 }
             }
 
