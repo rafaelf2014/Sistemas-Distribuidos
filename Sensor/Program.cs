@@ -60,7 +60,7 @@ namespace sensor
 
                                 string msgData = $"DATA_SEND|{idSensor}|TEMP|{timestamp}";
                                 writer.WriteLine(msgData);
-                                Console.WriteLine($"[ENVIADO]: {msgData}";
+                                Console.WriteLine($"[ENVIADO]: {msgData}");
 
                                 string ackData = reader.ReadLine();
                                 Console.WriteLine($"[RECEBIDO]: {ackData}");
