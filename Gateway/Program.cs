@@ -15,60 +15,68 @@ class MyTcpListener
             Int32 port = 5000;
             IPAddress localAddr = IPAddress.Parse("127.0.0.1");
 
-            //Crio o objeto TcpListener e o inicío
             server = new TcpListener(localAddr, port);
             server.Start();
 
-            //Buffer para leitura dos dados
-            Byte[] bytes = new Byte[256];
-
-            // O gateway entra num loop de "ouvir".
             while (true)
             {
-                Console.Write("Waiting for a connection... ");
+                Console.WriteLine("\nWaiting for a connection from a Sensor...");
 
-                //Aceita o cliente
-                using TcpClient client = server.AcceptTcpClient();
-                Console.WriteLine("Connected!");
 
-                //Pega o stream de dados do cliente
-                NetworkStream stream = client.GetStream();
-
-                int i;
-
-                //loop para ler os dados do cliente
-                while ((i = stream.Read(bytes, 0, bytes.Length)) != 0)
+                using (TcpClient client = server.AcceptTcpClient())
                 {
-                    // Traduzimos os bytes para caracteres
-                    string rawData = Encoding.ASCII.GetString(bytes, 0, i);
-                    Console.WriteLine($"Recebido: {rawData}");
+                    Console.WriteLine("Sensor Connected!");
 
-                    string command = rawData.Split('|')[0];
-                    string response = "ACK_OK";
 
-                    switch (command)
+                    using (NetworkStream stream = client.GetStream())
+                    using (StreamReader reader = new StreamReader(stream))
+                    using (StreamWriter writer = new StreamWriter(stream) { AutoFlush = true })
                     {
-                        case "HELLO":
-                            Console.WriteLine("Log: Sensor a iniciar...");
-                            break;
-                        case "DATA_SEND":
-                            Console.WriteLine("Log: Processando dados...");
-                            EnviarParaServidor(rawData); 
-                            break;
-                        case "HEARTBEAT":
-                            Console.WriteLine("Log: Sensor Vivo.");
-                            break;
-                        case "BYE":
-                            Console.WriteLine("Log: Sensor a desconectar");
-                            break;
-                        default:
-                            response = "ACK_ERR";
-                            break;
-                    }
+                        string rawData;
 
-                    // Responder ao Sensor
-                    byte[] msg = Encoding.ASCII.GetBytes(response);
-                    stream.Write(msg, 0, msg.Length);
+
+                        while ((rawData = reader.ReadLine()) != null)
+                        {
+                            Console.WriteLine($"Recebido: {rawData}");
+
+                            string[] parts = rawData.Split('|');
+                            string command = parts[0].ToUpper();
+                            string response = "ACK_OK";
+
+                            switch (command)
+                            {
+                                case "HELLO":
+                                    Console.WriteLine("Log: Sensor a iniciar...");
+                                    response = "ACK_HELLO|OK";
+                                    break;
+                                case "DATA_SEND":
+                                    Console.WriteLine("Log: Processando dados...");
+                                    EnviarParaServidor(rawData);
+                                    response = "ACK_DATA|OK";
+                                    break;
+                                case "HEARTBEAT":
+                                    Console.WriteLine("Log: Sensor Vivo.");
+                                    response = "ACK_HEARTBEAT|OK";
+                                    break;
+                                case "BYE":
+                                    Console.WriteLine("Log: Sensor a desconectar");
+                                    response = "ACK_BYE|OK";
+                                    break;
+                                default:
+                                    response = "ACK_ERR|Unknown Command";
+                                    break;
+                            }
+
+                            // Responder ao Sensor
+                            writer.WriteLine(response);
+
+                            if (command == "BYE")
+                            {
+                                break;
+                            }
+                        }
+                    }
+                    Console.WriteLine("Sensor connection closed. Ready for next sensor.");
                 }
             }
         }
@@ -78,11 +86,8 @@ class MyTcpListener
         }
         finally
         {
-            server.Stop();
+            server?.Stop();
         }
-
-        Console.WriteLine("\nHit enter to continue...");
-        Console.Read();
     }
 
     //Método para enviar os dados processados para o servidor central
@@ -90,18 +95,17 @@ class MyTcpListener
     {
         try
         {
-            using TcpClient serverClient = new TcpClient("127.0.0.1", 13000);
-            using NetworkStream serverStream = serverClient.GetStream();
-
-            byte[] dataToSend = Encoding.ASCII.GetBytes(data);
-            serverStream.Write(dataToSend, 0, dataToSend.Length);
-            Console.WriteLine("Dados encaminhados para o Servidor.");
+            using (TcpClient serverClient = new TcpClient("127.0.0.1", 14000))
+            using (NetworkStream serverStream = serverClient.GetStream())
+            using (StreamWriter writer = new StreamWriter(serverStream) { AutoFlush = true })
+            {
+                writer.WriteLine(data);
+                Console.WriteLine("Dados encaminhados para o Servidor.");
+            }
         }
         catch (Exception e)
         {
-            Console.WriteLine($"Falha ao contactar servidor: {e.Message}");
+            Console.WriteLine($"Falha ao contactar servidor (O Servidor está a correr?): {e.Message}");
         }
     }
-    
 }
-
