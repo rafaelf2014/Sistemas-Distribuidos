@@ -68,8 +68,10 @@ class MyTcpListener
                 // Trim whitespace from each part
                 for (int i = 0; i < partes.Length; i++) { partes[i] = partes[i].Trim(); }
 
+                // Fazer dinamicamente
+
                 // Expected format: "DATA_forward | gatewayId | sensorId | zona | tipoDado | valor | timestamp"
-                if (partes.Length == 7 && partes[0] == "DATA_forward")
+                if (partes.Length == 7 && partes[0] == "DATA_FORWARD")
                 {
                     string gatewayId = partes[1];
                     string sensorId = partes[2];
@@ -93,7 +95,7 @@ class MyTcpListener
                     }
 
                     // Sending ACK back to Gateway
-                    writer.WriteLine("ACK_ForwardDATA | Status OK");
+                    writer.WriteLine("ACK_FORWARDDATA | STATUS OK");
                 }
             }
 

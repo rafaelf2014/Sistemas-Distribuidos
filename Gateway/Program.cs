@@ -6,6 +6,8 @@ using System.Text;
 
 class MyTcpListener
 {
+    string gatewayId = "Gateway_001"; // ID do Gateway para identificação
+
     public static void Main()
     {
         TcpListener server = null;
@@ -95,11 +97,26 @@ class MyTcpListener
     {
         try
         {
+            string[] sensorParts = data.Split('|');
+            if (sensorParts.Length < 4)
+            {
+                Console.WriteLine("Erro: Mensagem do sensor incompleta para reencaminhamento.");
+                return;
+            }
+            string gatewayId = "Gateway_001"; // ID do Gateway para identificação
+            string zona = "Vila do conde"; // Zona fixa para este exemplo
+            string sensorId = sensorParts[2];
+            string tipoDado = sensorParts[4];
+            string valor = sensorParts[5];
+            string timestamp = sensorParts[6];
+
+            string modifiedData = $"DATA_FORWARD|{gatewayId}|{sensorId}|{zona}|{tipoDado}|{valor}|{timestamp}";
+
             using (TcpClient serverClient = new TcpClient("127.0.0.1", 14000))
             using (NetworkStream serverStream = serverClient.GetStream())
             using (StreamWriter writer = new StreamWriter(serverStream) { AutoFlush = true })
             {
-                writer.WriteLine(data);
+                writer.WriteLine(modifiedData);
                 Console.WriteLine("Dados encaminhados para o Servidor.");
             }
         }
