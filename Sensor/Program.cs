@@ -73,7 +73,7 @@ namespace sensor
                             case "4":
                                 string msgBye = $"BYE|{idSensor}";
                                 writer.WriteLine(msgBye);
-                                Console.WriteLine("[ENVIADO]: A terminar comunicação corretamente... [cite: 50]");
+                                Console.WriteLine("[ENVIADO]: A terminar comunicação corretamente...");
                                 running = false;
                                 break;
 
