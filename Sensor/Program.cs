@@ -58,7 +58,7 @@ namespace sensor
                             case "2":
                                 string timestamp = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss");
 
-                                string msgData = $"DATA_SEND|{idSensor}|TEMP|{timestamp}";
+                                string msgData = $"DATA_SEND|{idSensor}|25|{timestamp}";
                                 writer.WriteLine(msgData);
                                 Console.WriteLine($"[ENVIADO]: {msgData}");
 
@@ -73,7 +73,7 @@ namespace sensor
                             case "4":
                                 string msgBye = $"BYE|{idSensor}";
                                 writer.WriteLine(msgBye);
-                                Console.WriteLine("[ENVIADO]: A terminar comunicação corretamente... [cite: 50]");
+                                Console.WriteLine("[ENVIADO]: A terminar comunicação corretamente...");
                                 running = false;
                                 break;
 
