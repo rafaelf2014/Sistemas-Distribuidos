@@ -58,7 +58,7 @@ namespace sensor
                             case "2":
                                 string timestamp = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss");
 
-                                string msgData = $"DATA_SEND|{idSensor}|25|{timestamp}";
+                                string msgData = $"DATA_SEND|{idSensor}|TEMP|25|{timestamp}";
                                 writer.WriteLine(msgData);
                                 Console.WriteLine($"[ENVIADO]: {msgData}");
 
