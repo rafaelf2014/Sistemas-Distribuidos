@@ -6,10 +6,28 @@ using System.Text;
 
 class MyTcpListener
 {
-    string gatewayId = "Gateway_001"; // ID do Gateway para identificação
+    private static TcpClient _serverClient;
+    private static StreamWriter _serverWriter;
+    private static string _gatewayId = "Gateway_001";
+
+    public static void Connect()
+    {
+        try
+        {
+            _serverClient = new TcpClient("127.0.0.1", 14000);
+            NetworkStream stream = _serverClient.GetStream();
+            _serverWriter = new StreamWriter(stream) { AutoFlush = true };
+            Console.WriteLine(">>> Ligado ao Servidor Central com sucesso!");
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine($">>> Erro ao ligar ao Servidor Central: {e.Message}");
+        }
+    }
 
     public static void Main()
     {
+        Connect(); //Estabelece a conexão persistente com o servidor central
         TcpListener server = null;
 
         try
@@ -97,27 +115,30 @@ class MyTcpListener
     {
         try
         {
-            string[] sensorParts = data.Split('|');
-            if (sensorParts.Length < 4)
+            if (_serverWriter != null)
             {
-                Console.WriteLine("Erro: Mensagem do sensor incompleta para reencaminhamento.");
-                return;
+                string[] sensorParts = data.Split('|');
+                if (sensorParts.Length < 5)
+                {
+                    Console.WriteLine("Erro: Mensagem do sensor incompleta para reencaminhamento.");
+                    return;
+                }
+                string gatewayId = "Gateway_001"; // ID do Gateway para identificação
+                string zona = "Vila do conde"; // Zona fixa para este exemplo
+                string sensorId = sensorParts[1];
+                string tipoDado = sensorParts[2];
+                string valor = sensorParts[3];
+                string timestamp = sensorParts[4];
+
+                string modifiedData = $"DATA_FORWARD|{gatewayId}|{sensorId}|{zona}|{tipoDado}|{valor}|{timestamp}";
+
+                _serverWriter.WriteLine(modifiedData);
+                Console.WriteLine("Dados encaminhados via conexão persistente.");
             }
-            string gatewayId = "Gateway_001"; // ID do Gateway para identificação
-            string zona = "Vila do conde"; // Zona fixa para este exemplo
-            string sensorId = sensorParts[2];
-            string tipoDado = sensorParts[4];
-            string valor = sensorParts[5];
-            string timestamp = sensorParts[6];
-
-            string modifiedData = $"DATA_FORWARD|{gatewayId}|{sensorId}|{zona}|{tipoDado}|{valor}|{timestamp}";
-
-            using (TcpClient serverClient = new TcpClient("127.0.0.1", 14000))
-            using (NetworkStream serverStream = serverClient.GetStream())
-            using (StreamWriter writer = new StreamWriter(serverStream) { AutoFlush = true })
+            else
             {
-                writer.WriteLine(modifiedData);
-                Console.WriteLine("Dados encaminhados para o Servidor.");
+                Console.WriteLine("Erro: Conexão com servidor central perdida. A tentar reconectar...");
+                Connect(); //Tenta conectar de volta com o servidor
             }
         }
         catch (Exception e)
