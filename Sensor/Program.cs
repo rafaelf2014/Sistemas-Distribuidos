@@ -1,112 +1,141 @@
 ﻿using System;
 using System.IO;
 using System.Net.Sockets;
+using System.Threading;
+using System.Timers;
+using Timer = System.Timers.Timer;
+using System.Globalization;
 
 namespace sensor
 {
     class Program
     {
+        static StreamWriter _writer;
+        static StreamReader _reader;
+        static readonly object streamLock = new object();
+
+        static System.Timers.Timer _timerTemperatura;
+        static System.Timers.Timer _timerHeartbeat;
+        static bool _conectado = false;
+
+        // Mete aqui os dados do sensor (id, zona e tipo de dados)
+        static string _idSensor = "S001";
+        static string _zona = "CHAVES";
+        static string _dataTypes = "TEMP,HUM";
+
+        static int _intervaloDados = 5000; // 1000 = 1 segundo
+        static int _intervaloHeartbeat = 3000;
+
         static void Main(string[] args)
         {
-            string ipGateway = "127.0.0.1";
+            string ipGateway = args.Length > 0 ? args[0] : "127.0.0.1";
             int portGateway = 5000;
 
-            if (args.Length > 0)
-            {
-                ipGateway = args[0];
-            } 
-            else
-            {
-                Console.WriteLine("IP não fornecido. Default: 127.0.0.1");
-            }
-            bool tentarLigar = true;
+            Console.WriteLine($"[SENSOR {_idSensor}] ligado na zona: {_zona}...");
+            ConfigurarTemporizadores();
 
-            string idSensor = "S001";
-            string dataTypes = "TEMP, HUM";
-
-            while (tentarLigar)
+            while (true)
             {
                 try
                 {
+                    if (!_conectado) {
+                        Console.WriteLine($"\n[SENSOR {_idSensor}] a tentar ligar ao Gateway em {ipGateway}:{portGateway}..."); }
+                    
                     using (TcpClient client = new TcpClient(ipGateway, portGateway))
                     using (NetworkStream stream = client.GetStream())
                     using (StreamReader reader = new StreamReader(stream))
                     using (StreamWriter writer = new StreamWriter(stream) { AutoFlush = true })
                     {
-                        Console.WriteLine($"[SENSOR {idSensor}] ligado com sucesso ao Gateway em {ipGateway}:{portGateway}");
+                        Console.WriteLine($"[SENSOR {_idSensor}] ligado com sucesso ao Gateway!");
+                        _writer = writer;
+                        _reader = reader;
+                        _conectado = true;
 
-                        bool running = true;
+                        EnviarMensagem($"HELLO|{_idSensor}|{_zona}|[{_dataTypes}]");
 
-                        while (running)
+                        while (_conectado)
                         {
-                            Console.WriteLine("\n ---------- Menu Sensor ----------");
-                            Console.WriteLine("1 - Estabelecer Comunicação [HELLO]");
-                            Console.WriteLine("2 - Enviar Dados [DATA_SEND]");
-                            Console.WriteLine("3 - Enviar HeartBeat [HEARTBEAT]");
-                            Console.WriteLine("4 - Desligar [BYE]");
-                            Console.WriteLine("\nEscolha uma opção");
-
-                            string option = Console.ReadLine();
-                            switch (option)
-                            {
-                                case "1":
-                                    string msgHello = $"HELLO|{idSensor}|[{dataTypes}]";
-                                    writer.WriteLine(msgHello);
-                                    Console.WriteLine($"[ENVIADO]: {msgHello}");
-
-                                    string ackHello = reader.ReadLine();
-                                    Console.WriteLine($"[RECEBIDO]: {ackHello}");
-                                    break;
-
-                                case "2":
-                                    string timestamp = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss");
-
-                                    string msgData = $"DATA_SEND|{idSensor}|TEMP|25|{timestamp}";
-                                    writer.WriteLine(msgData);
-                                    Console.WriteLine($"[ENVIADO]: {msgData}");
-
-                                    string ackData = reader.ReadLine();
-                                    Console.WriteLine($"[RECEBIDO]: {ackData}");
-                                    break;
-
-                                case "3":
-                                    Console.WriteLine("Ainda por implementar...");
-                                    break;
-
-                                case "4":
-                                    string msgBye = $"BYE|{idSensor}";
-                                    writer.WriteLine(msgBye);
-                                    Console.WriteLine("[ENVIADO]: A terminar comunicação corretamente...");
-                                    running = false;
-                                    tentarLigar = false;
-                                    break;
-
-                                default:
-                                    Console.WriteLine("Opção Invalida");
-                                    break;
-                            }
-
+                            Thread.Sleep(1000);
                         }
+                        
                     }
                 }
-                catch (SocketException) // Captura especificamente o erro de falha de ligação
+                catch (SocketException)
                 {
-                    Console.WriteLine("\n[ERRO] Não foi possível encontrar o Gateway. Será que está desligado?");
-                    Console.Write("Desejas tentar novamente? (s/n): ");
-                    string resposta = Console.ReadLine();
-
-                    if (resposta != null && resposta.ToLower() != "s")
-                    {
-                        tentarLigar = false; // Sai do loop e termina o programa pacificamente
-                    }
+                    _conectado = false;
+                    Console.WriteLine("\n[ERRO] Gateway não alcançado. A tentar novamente em 5 segundos...");
+                    Thread.Sleep(5000);
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"\n[ERRO INESPERADO]: {ex.Message}");
-                    tentarLigar = false;
+                    _conectado = false;
+                    Console.WriteLine($"\n[Exception]: {ex.Message}");
+                    Console.WriteLine("A tentar novamente em 5 segundos...");
+                    Thread.Sleep(5000);
                 }
             }
         }
 
-    }   
+        static void ConfigurarTemporizadores()
+        {
+            _timerTemperatura = new Timer(_intervaloDados);
+            _timerTemperatura.Elapsed += EnviarDadosAutomaticos;
+            _timerTemperatura.AutoReset = true;
+            _timerTemperatura.Start();
+
+            _timerHeartbeat = new Timer(_intervaloHeartbeat);
+            _timerHeartbeat.Elapsed += EnviarHeartbeatAutomatico;
+            _timerHeartbeat.AutoReset = true;
+            _timerHeartbeat.Start();
+        }
+
+        static void EnviarDadosAutomaticos(object sender, ElapsedEventArgs e)
+        {
+            if (!_conectado) return;
+
+            double tempRandom = 15.0 + new Random().NextDouble() * 20.0;
+            double humRandom = 30.0 + new Random().NextDouble() * 50.0;
+            string timestamp = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss");
+
+            string tempStr = Math.Round(tempRandom, 1).ToString(CultureInfo.InvariantCulture);
+            string humStr = Math.Round(humRandom, 1).ToString(CultureInfo.InvariantCulture);
+
+            string msgTemp = $"DATA_SEND|{_idSensor}|TEMP|{tempStr}|{timestamp}";
+            EnviarMensagem(msgTemp);
+            string msgHum = $"DATA_SEND|{_idSensor}|HUM|{humStr}|{timestamp}";
+            EnviarMensagem(msgHum);
+        }
+
+        static void EnviarHeartbeatAutomatico(object sender, ElapsedEventArgs e)
+        {
+            if (!_conectado) return;
+
+            EnviarMensagem($"HEARTBEAT|{_idSensor}");
+        }
+
+        static void EnviarMensagem(string mensagem)
+        {
+            lock (streamLock)
+            {
+                try
+                {
+                    _writer.WriteLine(mensagem);
+                    string resposta = _reader.ReadLine();
+
+                    if (resposta == null)
+                    {
+                        _conectado = false;
+                        Console.WriteLine("\n[ERRO] Conexão perdida com o Gateway.");
+                        return;
+                    }
+                    Console.WriteLine($"[TX] {mensagem}");
+                    Console.WriteLine($"[RX] {resposta}\n");
+                }
+                catch
+                {
+                    _conectado = false;
+                }
+            }
+        }
+    }
 }
