@@ -21,8 +21,12 @@ class MyTcpListener
     static readonly object _bufferFileLock = new object();
     static Timer _timerAgregacao;
 
+    static TcpListener server = null;
+
     public static void Main()
     {
+        Console.CancelKeyPress += new ConsoleCancelEventHandler(TratarEncerramento);
+
         Console.WriteLine($"[GATEWAY {_gatewayId}] a iniciar...");
         InicializarFicheiroConfiguracao();
 
@@ -31,7 +35,6 @@ class MyTcpListener
         _timerAgregacao.AutoReset = true;
         _timerAgregacao.Start();
 
-        TcpListener server = null;
         try
         {
             Int32 port = 5000;
@@ -48,8 +51,24 @@ class MyTcpListener
                 threadSensor.Start();
             }
         }
-        catch (SocketException e) { Console.WriteLine($"Erro: {e.Message}"); }
+        catch (SocketException e) 
+        { 
+            Console.WriteLine($"Escuta interrompida: {e.Message}"); 
+        }
         finally { server?.Stop(); }
+    }
+
+    static void TratarEncerramento(object sender, ConsoleCancelEventArgs args)
+    {
+        args.Cancel = true; 
+        Console.WriteLine("\n\n[AVISO] A encerrar o Gateway...");
+        
+        _timerAgregacao?.Stop();
+        server?.Stop();
+
+        Console.WriteLine("Gateway desligado. Os dados em buffer guardados.");
+        Thread.Sleep(500);
+        Environment.Exit(0);
     }
 
     static void HandleSensor(TcpClient client)

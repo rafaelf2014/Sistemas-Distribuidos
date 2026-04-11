@@ -28,6 +28,8 @@ namespace sensor
 
         static void Main(string[] args)
         {
+            Console.CancelKeyPress += new ConsoleCancelEventHandler(TratarEncerramento);
+
             string ipGateway = args.Length > 0 ? args[0] : "127.0.0.1";
             int portGateway = 5000;
 
@@ -74,6 +76,22 @@ namespace sensor
                     Thread.Sleep(5000);
                 }
             }
+        }
+
+        static void TratarEncerramento(object sender, ConsoleCancelEventArgs args)
+        {
+            args.Cancel = true; 
+            
+            Console.WriteLine("\n\n[AVISO] A encerrar o sensor...");
+
+            if (_conectado && _writer != null)
+            {
+                EnviarMensagem($"BYE|{_idSensor}");
+            }
+
+            Console.WriteLine("Sensor desligado. XAU!");
+            Thread.Sleep(500); 
+            Environment.Exit(0); 
         }
 
         static void ConfigurarTemporizadores()

@@ -14,13 +14,15 @@ class ServerCentral
     private static readonly object dbPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, @"..\..\..\ServerData.db"));
     private static readonly string connectionString = $"Data Source={dbPath}";
 
+    static TcpListener server = null;
+
     public static void Main()
     {
-        Console.WriteLine("A iniciar o Servidor...");
+        Console.CancelKeyPress += new ConsoleCancelEventHandler(TratarEncerramento);
 
+        Console.WriteLine("A iniciar o Servidor...");
         InicializarBaseDeDados();
 
-        TcpListener server = null;
         try
         {
             Int32 port = 14000;
@@ -47,6 +49,18 @@ class ServerCentral
         {
             server?.Stop();
         }
+    }
+
+    static void TratarEncerramento(object sender, ConsoleCancelEventArgs args)
+    {
+        args.Cancel = true; 
+        Console.WriteLine("\n\n[AVISO] A desligar o Servidor. A libertar a porta 14000...");
+        
+        server?.Stop();
+        
+        Console.WriteLine("Servidor desligado...");
+        Thread.Sleep(500);
+        Environment.Exit(0);
     }
 
     static void InicializarBaseDeDados()
