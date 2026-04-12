@@ -20,6 +20,7 @@ class MyTcpListener
     static readonly object fileLock = new object();
     static readonly object _bufferFileLock = new object();
     static Timer _timerAgregacao;
+    static Timer _timerWatchdog;
 
     static TcpListener server = null;
 
@@ -34,6 +35,11 @@ class MyTcpListener
         _timerAgregacao.Elapsed += ProcessarEEnviarAgregados;
         _timerAgregacao.AutoReset = true;
         _timerAgregacao.Start();
+
+        _timerWatchdog = new Timer(10000);
+        _timerWatchdog.Elapsed += VerificarSensoresPerdidos;
+        _timerWatchdog.AutoReset = true;
+        _timerWatchdog.Start();
 
         try
         {
@@ -272,62 +278,123 @@ class MyTcpListener
         return "ZONA DESCONHECIDA";
     }
 
+    static void VerificarSensoresPerdidos(object sender, ElapsedEventArgs e)
+    {
+        lock (fileLock)
+        {
+            if (!File.Exists(caminhoFicheiro)) return;
+            var linhas = File.ReadAllLines(caminhoFicheiro).ToList();
+            bool alterado = false;
+
+            for (int i = 0; i < linhas.Count; i++)
+            {
+                var col = linhas[i].Split(';');
+                if (col.Length >= 5 && col[1] == "ativo") 
+                {
+                    if (DateTime.TryParse(col[4], out DateTime lastSync))
+                    {
+                        if ((DateTime.Now - lastSync).TotalSeconds > 30)
+                        {
+                            col[1] = "perdido"; // Muda o estado
+                            linhas[i] = string.Join(";", col);
+                            alterado = true;
+                            Console.WriteLine($"\n[ALERTA] Sensor {col[0]} foi perdido.");
+                        }
+                    }
+                }
+            }
+
+            if (alterado)
+            {
+                File.WriteAllLines(caminhoFicheiro, linhas);
+            }
+        }
+    }
+
     static void ProcessarEEnviarAgregados(object sender, ElapsedEventArgs e)
     {
-        List<string> mensagensPraEnviar = new List<string>();
-
         lock (_bufferFileLock)
         {
             string[] ficheirosBuffer = Directory.GetFiles(pastaProjeto, "buffer_*.csv");
-
             foreach (string ficheiro in ficheirosBuffer)
             {
                 try
                 {
-                    string nome = Path.GetFileNameWithoutExtension(ficheiro);
-                    string[] partes = nome.Split('_');
-                    if (partes.Length != 3) continue;
-
-                    string sensorId = partes[1];
-                    string tipoDado = partes[2];
-
-                    string[] linhas = File.ReadAllLines(ficheiro);
-                    if (linhas.Length == 0) continue;
-
-                    List<double> valores = new List<double>();
-                    foreach (string linha in linhas)
-                    {
-                        if (double.TryParse(linha, NumberStyles.Any, CultureInfo.InvariantCulture, out double val))
-                        {
-                            valores.Add(val);
-                        }
-                    }
-
-                    if (valores.Count > 0)
-                    {
-                        double media = valores.Average();
-                        string timestamp = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss");
-
-                        string msg = $"DATA_SEND|{sensorId}|{tipoDado}|{media.ToString("F2", CultureInfo.InvariantCulture)}|{timestamp}";
-                        mensagensPraEnviar.Add(msg);
-                    }
-
-                    File.Delete(ficheiro);
-                    Console.WriteLine($"{valores.Count} valores de {sensorId} ({tipoDado}). Ficheiro apagado.");
+                    string nomeAntigo = Path.GetFileName(ficheiro);
+                    string novoNome = nomeAntigo.Replace("buffer_", $"pendente_{DateTime.Now.Ticks}_");
+                    string novoCaminho = Path.Combine(pastaProjeto, novoNome);
+                    
+                    File.Move(ficheiro, novoCaminho);
                 }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Erro de ficheiro {ficheiro}: {ex.Message}");
-                }
+                catch (Exception ex) { Console.WriteLine($"Erro ao rodar ficheiro: {ex.Message}"); }
             }
         }
-        foreach (string msg in mensagensPraEnviar)
+
+        string[] ficheirosPendentes = Directory.GetFiles(pastaProjeto, "pendente_*.csv");
+
+        foreach (string ficheiro in ficheirosPendentes)
         {
-            EnviarParaServidor(msg);
+            try
+            {
+                string nome = Path.GetFileNameWithoutExtension(ficheiro);
+                string[] partes = nome.Split('_');
+
+                if (partes.Length != 4) continue; 
+
+                string ticksStr = partes[1];
+                string sensorId = partes[2];
+                string tipoDado = partes[3];
+
+                string[] linhas = File.ReadAllLines(ficheiro);
+                if (linhas.Length == 0) 
+                {
+                    File.Delete(ficheiro); // Apaga lixo vazio
+                    continue;
+                }
+
+                List<double> valores = new List<double>();
+                foreach (string linha in linhas)
+                {
+                    if (double.TryParse(linha, NumberStyles.Any, CultureInfo.InvariantCulture, out double val))
+                    {
+                        valores.Add(val);
+                    }
+                }
+
+                if (valores.Count > 0)
+                {
+                    double media = valores.Average();
+
+                    string timestampHistorico = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss");
+                    if (long.TryParse(ticksStr, out long ticksOriginais))
+                    {
+                        DateTime dataOriginal = new DateTime(ticksOriginais);
+                        timestampHistorico = dataOriginal.ToString("yyyy-MM-ddTHH:mm:ss");
+                    }
+
+                    string msg = $"DATA_SEND|{sensorId}|{tipoDado}|{media.ToString("F2", CultureInfo.InvariantCulture)}|{timestampHistorico}";
+                    
+                    bool sucesso = EnviarParaServidor(msg);
+
+                    if (sucesso)
+                    {
+                        File.Delete(ficheiro);
+                        Console.WriteLine($"[SUCESSO] {valores.Count} leituras de {sensorId} ({tipoDado}) enviadas. Ficheiro apagado.");
+                    }
+                    else
+                    {
+                        Console.WriteLine($"[FALHA] Servidor indisponível. O ficheiro de {sensorId} foi guardado para a próxima tentativa.");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Erro ao processar ficheiro pendente: {ex.Message}");
+            }
         }
     }
 
-    static void EnviarParaServidor(string data)
+    static bool EnviarParaServidor(string data)
     {
         try
         {
@@ -342,9 +409,20 @@ class MyTcpListener
 
                 string modified = $"DATA_FORWARD|{_gatewayId}|{p[1]}|{zona}|{p[2]}|{p[3]}|{p[4]}";
                 w.WriteLine(modified);
-                Console.WriteLine($"[GATEWAY -> SERVER]: {r.ReadLine()}");
+
+                string resposta = r.ReadLine();
+                Console.WriteLine($"[GATEWAY -> SERVER]: {resposta}");
+
+                if (resposta != null && resposta.Contains("STATUS OK"))
+                {
+                    return true;
+                }
             }
         }
-        catch (Exception ex) { Console.WriteLine($"Erro: {ex.Message}"); }
+        catch (Exception ex) 
+        { 
+            Console.WriteLine($"Erro: {ex.Message}");
+        }
+        return false;
     }
 }
