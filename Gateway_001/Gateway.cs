@@ -22,7 +22,6 @@ class MyTcpListener
     static Timer _timerWatchdog;
     static TcpListener server = null;
 
-    // NOVO: Dicionário para guardar as unidades para usar na UI
     static Dictionary<string, string> _unidadesMedida = new Dictionary<string, string>();
 
     private static readonly object _consoleLock = new object();
@@ -62,14 +61,11 @@ class MyTcpListener
         finally { server?.Stop(); }
     }
 
-    // ==========================================
-    // CONFIGURAÇÃO DINÂMICA (COM UNIDADES)
-    // ==========================================
     static void InicializarTimersGateway()
     {
         string caminhoConfig = Path.Combine(pastaProjeto, "config_gateway.csv");
 
-        // CORREÇÃO: Formato -> DATATYPE ; UNIDADE ; INTERVALO_MS
+        // Formato -> DATATYPE ; UNIDADE ; INTERVALO_MS
         if (!File.Exists(caminhoConfig))
         {
             File.WriteAllText(caminhoConfig, "TEMP;ºC;30000\nHUM;%;60000\nCO2;ppm;90000\n");
@@ -88,7 +84,6 @@ class MyTcpListener
                 
                 if (int.TryParse(col[2].Trim(), out int intervalo))
                 {
-                    // Guarda a unidade no dicionário!
                     _unidadesMedida[tipoDado] = unidade;
 
                     Timer t = new Timer(intervalo);
@@ -203,7 +198,7 @@ class MyTcpListener
                         break;
 
                     case "VIDEO_REQ":
-                        RegistarLogEsquerda($"EDGE AI: Vídeo pedido por {parts[1]}...", true);
+                        RegistarLogEsquerda($"EDGE: Vídeo pedido por {parts[1]}...", true);
                         resposta = "ACK_VIDEO|OK";
                         break;
 

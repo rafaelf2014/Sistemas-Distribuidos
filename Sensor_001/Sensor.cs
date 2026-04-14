@@ -34,7 +34,6 @@ namespace sensor
         private static List<string> _ultimosLogs = new List<string>();
         private static List<string> _ultimosAlarmes = new List<string>();
         
-        // CORREÇÃO: O Estado volta a ser um bool real!
         private static bool _isOnline = false;
         private static bool _encerrando = false;
         private static string _gatewayConectado = "";
@@ -68,7 +67,6 @@ namespace sensor
 
                         EnviarMensagem($"HELLO|{_idSensor}|{_zona}|[{_dataTypes}]");
 
-                        // Fica a rodar enquanto o bool permitir
                         while (_isOnline)
                         {
                             Thread.Sleep(1000);
@@ -144,12 +142,12 @@ namespace sensor
             Random r = new Random();
             double valorGerado = 0.0;
 
-            // CORREÇÃO: Probabilidade implícita! Se for TEMP varia de 0 a 50, se HUM varia de 0 a 100.
+            // Simular valores
             if (cfg.TipoDado == "TEMP") valorGerado = r.NextDouble() * 50.0;
             else if (cfg.TipoDado == "HUM") valorGerado = r.NextDouble() * 100.0;
             else valorGerado = r.NextDouble() * (cfg.LimiteAlarme + 20.0); // Fallback dinâmico
 
-            // Se o alarme estiver ativado na config E o valor aleatório ultrapassar, é anomalia!
+            // Ativar alarme
             bool isAnomalia = cfg.AlarmePossivel && (valorGerado > cfg.LimiteAlarme);
             
             string timestamp = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss");
@@ -194,7 +192,7 @@ namespace sensor
         static void AlterarEstado(bool status, string descricao)
         {
             _isOnline = status;
-            _gatewayConectado = descricao; // Descrição UI ou GWID
+            _gatewayConectado = descricao;
             DesenharDashboard();
         }
 
@@ -276,7 +274,7 @@ namespace sensor
             Console.ForegroundColor = ConsoleColor.Cyan;
             Console.WriteLine("\n" + linhaSeparadora);
             Console.ResetColor();
-            Console.WriteLine(" Pressione Ctrl+C para desligar e enviar comando BYE.");
+            Console.WriteLine(" Pressione Ctrl+C para desligar.");
         }
 
         static void TratarEncerramento(object sender, ConsoleCancelEventArgs args)
