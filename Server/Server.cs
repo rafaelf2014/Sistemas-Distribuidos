@@ -16,7 +16,7 @@ partial class ServerCentral
         string GatewayId, string SensorId, string Zona,
         string TipoDado, string Valor, string Timestamp, bool IsAlarm);
 
-    // Bounded to 1000: if full, gateway gets ERRO FILA CHEIA and retains its pending file for retry
+    // Limite de 1000
     private static readonly BlockingCollection<DataRecord> _filaEscrita = new(1000);
     private static Thread _threadConsumidor;
 
@@ -24,7 +24,7 @@ partial class ServerCentral
     private static readonly string connectionString = $"Data Source={dbPath}";
     static TcpListener _server = null;
 
-    // Sensors that advertised video-streaming capability (populated via SENSOR_REG)
+    // Sensores com video
     private static readonly ConcurrentDictionary<string, (string GatewayId, string Zona, string Tipos)> _sensoresStream = new();
 
     #endregion
@@ -36,7 +36,7 @@ partial class ServerCentral
         Console.CancelKeyPress += new ConsoleCancelEventHandler(TratarEncerramento);
         InicializarBaseDeDados();
 
-        // Consumer thread: single writer, no DB lock contention
+        // Ler fila
         _threadConsumidor = new Thread(ConsumidorBaseDeDados)
         {
             IsBackground = true,
@@ -65,7 +65,7 @@ partial class ServerCentral
         finally { _server?.Stop(); }
     }
 
-    // Drains the queue and writes to DB. Single thread — no lock needed.
+    // Lê da fila e insere
     static void ConsumidorBaseDeDados()
     {
         foreach (var r in _filaEscrita.GetConsumingEnumerable())
@@ -98,17 +98,16 @@ partial class ServerCentral
                     bool isAlarm = partes[0] == "ALARM_FORWARD";
                     var registo  = new DataRecord(partes[1], partes[2], partes[3], partes[4], partes[5], partes[6], isAlarm);
 
-                    // TryAdd with timeout: blocks up to 5s if queue is full, then tells gateway to retry
+                    // tenta de 5 em 5
                     if (_filaEscrita.TryAdd(registo, TimeSpan.FromSeconds(5)))
                     {
-                        // ACK sent immediately — gateway can delete its pending file now
+                        // Enviar resposta
                         writer.WriteLine("ACK_FORWARDDATA|STATUS OK");
                         if (isAlarm) RegistarLog($"[{partes[3]}] ANOMALIA! Sensor: {partes[2]} | {partes[4]} = {partes[5]}", true);
                         else         RegistarLog($"[{partes[3]}] {partes[2]} -> {partes[4]} = {partes[5]}");
                     }
                     else
                     {
-                        // Queue saturated — gateway retains pending file and retries next cycle
                         writer.WriteLine("ACK_FORWARDDATA|ERRO FILA CHEIA");
                         RegistarLog($"Fila de escrita cheia! Dado de {partes[2]} rejeitado.");
                     }
@@ -152,7 +151,6 @@ partial class ServerCentral
         catch (Exception ex) { RegistarLog($"Erro DB: {ex.Message}"); }
     }
 
-    // Called only from ConsumidorBaseDeDados (single thread) — no lock needed
     static void InserirNaBaseDeDados(string gatewayId, string sensorId, string zona,
         string tipoDado, string valor, string timestamp, bool isAlarm)
     {
@@ -187,7 +185,6 @@ partial class ServerCentral
 
         _server?.Stop();
 
-        // Signal consumer thread to finish after draining the remaining queue
         _filaEscrita.CompleteAdding();
         _threadConsumidor.Join(TimeSpan.FromSeconds(10));
 

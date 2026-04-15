@@ -86,12 +86,9 @@ namespace sensor
                     using (StreamReader reader = new StreamReader(stream))
                     using (StreamWriter writer = new StreamWriter(stream) { AutoFlush = true })
                     {
-                        // Assign writer/reader inside streamLock before _isOnline = true
-                        // so no timer thread can enter EnviarMensagem with a null writer
                         lock (streamLock) { _writer = writer; _reader = reader; }
                         AlterarEstado(true, "Gateway");
 
-                        // 5th field: video streaming capability flag
                         EnviarMensagem($"HELLO|{_idSensor}|{_zona}|[{_dataTypes}]|{(_videoStream ? "true" : "false")}");
 
                         while (_isOnline) Thread.Sleep(1000);
@@ -166,7 +163,7 @@ namespace sensor
                 _       => _rng.NextDouble() * 100.0
             };
 
-            // 10% spike to exercise gateway alarm detection
+            // 10%
             if (_rng.Next(10) == 0) v += 60.0;
 
             string ts  = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss");
@@ -243,7 +240,6 @@ namespace sensor
             Console.WriteLine(sep);
             Console.ResetColor();
 
-            // Fixed 10-slot log section — always renders exactly 12 lines (blank + header + 10 entries)
             Console.WriteLine(new string(' ', 110));
             Console.WriteLine("[ ULTIMAS 10 LEITURAS AMBIENTAIS ENVIADAS ]".PadRight(110));
             for (int i = 0; i < 10; i++)

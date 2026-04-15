@@ -54,7 +54,7 @@ partial class MyTcpListener
     static readonly JsonSerializerOptions _jsonRead  = new() { PropertyNameCaseInsensitive = true };
     static readonly JsonSerializerOptions _jsonWrite = new() { WriteIndented = true };
 
-    // In-memory sensor registry: eliminates file reads on every DATA_SEND
+    // è melhor usar cache pra evitar problemas de performance e concorrência
     static readonly Dictionary<string, (string Status, string Zona, string Tipos, bool VideoStream, DateTime LastSync)>
         _sensoresCache = new();
 
@@ -220,7 +220,6 @@ partial class MyTcpListener
         }
     }
 
-    // Rebuilds sensores.json from the in-memory cache. Must be called inside fileLock.
     static void PersistirCacheParaJson()
     {
         var lista = _sensoresCache.Select(kv => new SensorEntry
@@ -247,7 +246,6 @@ partial class MyTcpListener
         }
     }
 
-    // O(1) cache lookup — no file I/O on the hot DATA_SEND path
     static bool ValidarSensor(string id, string tipoDados)
     {
         lock (fileLock)
@@ -256,7 +254,6 @@ partial class MyTcpListener
         }
     }
 
-    // Heartbeats update only the cache — no disk write every 5 seconds per sensor
     static void AtualizarLastSync(string id)
     {
         lock (fileLock)
@@ -503,8 +500,7 @@ partial class MyTcpListener
         }
     }
 
-    // Informs the server that a sensor registered with the gateway (and whether it has video capability).
-    // Called with no locks held — may fail silently if server is not yet running.
+    // Diz ao server que sensor é e se tem video
     static void EnviarRegistoSensorParaServidor(string sensorId, string zona, string tipos, bool videoCapable)
     {
         try
