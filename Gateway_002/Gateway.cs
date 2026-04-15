@@ -468,7 +468,7 @@ partial class MyTcpListener
                         break;
                 }
 
-                // Piggyback any pending stream command onto the ACK
+                // fazemos hijack do comando pra enviar resposta + possível comando pendente
                 string cmdSuffix = parts.Length > 1 ? ComandoPendenteParaSensor(parts[1]) : "";
                 writer.WriteLine(resposta + cmdSuffix);
                 if (command == "BYE") break;

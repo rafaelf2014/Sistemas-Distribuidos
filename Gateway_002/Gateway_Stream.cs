@@ -5,11 +5,6 @@ using System.Net.Sockets;
 using System.Collections.Concurrent;
 using System.Threading;
 
-// ==========================================
-// STREAMING — Gateway Edge
-// Recebe comandos REQUEST_STREAM / STOP_STREAM do servidor (porta 14001)
-// e entrega-os ao sensor via piggyback no próximo ACK.
-// ==========================================
 partial class MyTcpListener
 {
     #region CAMPOS STREAM

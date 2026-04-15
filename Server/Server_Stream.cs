@@ -6,10 +6,6 @@ using System.Linq;
 using System.Threading;
 using OpenCvSharp;
 
-// ==========================================
-// STREAMING — Servidor Central
-// Gere a recepção UDP e a janela de visualização.
-// ==========================================
 partial class ServerCentral
 {
     #region CAMPOS STREAM

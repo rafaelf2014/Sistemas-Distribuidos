@@ -204,7 +204,7 @@ namespace sensor
 
         #region STREAMING
 
-        // Analisa o ACK do gateway e activa/desactiva o stream se vier um comando piggyback
+        // Analisa o ACK do gateway e activa/desactiva o stream se vier um comando, é pra isto que ser o hijack no gateway
         static void ProcessarComando(string resposta)
         {
             string[] partes = resposta.Split('|');
@@ -263,7 +263,7 @@ namespace sensor
                     Cv2.ImEncode(".jpg", frame, out byte[] jpeg,
                         new ImageEncodingParam(ImwriteFlags.JpegQuality, 65));
 
-                    // UDP max payload ~65507 bytes; 320x240 JPEG@Q65 fica bem abaixo disso
+                    // diminuir tamanho dos frames
                     if (jpeg.Length <= 60000)
                         udpClient.Send(jpeg, jpeg.Length, endpoint);
 
