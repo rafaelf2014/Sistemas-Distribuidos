@@ -23,7 +23,6 @@ class ServerCentral
     {
         Console.CancelKeyPress += new ConsoleCancelEventHandler(TratarEncerramento);
         InicializarBaseDeDados();
-
         try
         {
             Int32 port = 14000;
@@ -73,13 +72,11 @@ class ServerCentral
     {
         Console.Clear();
         string linhaSeparadora = new string('=', 110);
-
         Console.ForegroundColor = ConsoleColor.Cyan;
         Console.WriteLine(linhaSeparadora);
         Console.WriteLine("                                          [ ONE HEALTH - SERVIDOR CENTRAL ]                                      ");
         Console.WriteLine(linhaSeparadora);
         Console.ResetColor();
-
         Console.Write("  ESTADO: ");
         if (_isOnline) { Console.ForegroundColor = ConsoleColor.Green; Console.Write("ONLINE"); }
         else { Console.ForegroundColor = ConsoleColor.Red; Console.Write("OFFLINE"); }
@@ -133,7 +130,6 @@ class ServerCentral
             using NetworkStream stream = gatewayClient.GetStream();
             using StreamReader reader = new StreamReader(stream, Encoding.UTF8);
             using StreamWriter writer = new StreamWriter(stream, Encoding.UTF8) { AutoFlush = true };
-
             string linha;
             while ((linha = reader.ReadLine()) != null)
             {
@@ -159,7 +155,6 @@ class ServerCentral
         catch (Exception e) { RegistarLog($"ERRO REDE ({endpoint}): {e.Message}"); }
         finally { gatewayClient.Close(); }
     }
-
     static void InicializarBaseDeDados()
     {
         lock (_dbLock)

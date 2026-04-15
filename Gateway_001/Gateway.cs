@@ -17,7 +17,6 @@ class MyTcpListener
     static readonly string caminhoFicheiro = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, @"..\..\..\sensores.csv"));
     static readonly object fileLock = new object();
     static readonly object _bufferFileLock = new object();
-
     static List<Timer> _timersAgregacao = new List<Timer>();
     static Timer _timerWatchdog;
     static TcpListener server = null;
@@ -35,7 +34,6 @@ class MyTcpListener
     {
         Console.CancelKeyPress += new ConsoleCancelEventHandler(TratarEncerramento);
         InicializarFicheiroConfiguracao();
-
         InicializarTimersGateway();
 
         _timerWatchdog = new Timer(10000);
@@ -85,7 +83,6 @@ class MyTcpListener
             {
                 string tipoDado = col[0].Trim().ToUpper();
                 string unidade = col[1].Trim();
-
                 if (int.TryParse(col[2].Trim(), out int intervalo))
                 {
                     // Guarda a unidade no dicionário!
@@ -173,7 +170,6 @@ class MyTcpListener
             using NetworkStream stream = client.GetStream();
             using StreamReader reader = new StreamReader(stream);
             using StreamWriter writer = new StreamWriter(stream) { AutoFlush = true };
-
             string rawData;
             while ((rawData = reader.ReadLine()) != null)
             {
@@ -225,7 +221,6 @@ class MyTcpListener
                             else resposta = "ACK_DATA|ERRO_VALIDACAO";
                         }
                         break;
-
                     case "ALARM_SEND":
                         if (ValidarSensor(parts[1], parts[2]))
                         {
@@ -490,7 +485,6 @@ class MyTcpListener
             string t = DateTime.Now.ToString("HH:mm:ss");
             _logsDireita.Insert(0, $"   └─> {msgResposta}");
             _logsDireita.Insert(0, $"[{t}] {msgEnvio}");
-
             while (_logsDireita.Count > 20) _logsDireita.RemoveAt(_logsDireita.Count - 1);
             DesenharDashboard();
         }
@@ -500,20 +494,17 @@ class MyTcpListener
     {
         Console.Clear();
         string separador = new string('=', 118);
-
         Console.ForegroundColor = ConsoleColor.Cyan;
         Console.WriteLine(separador);
         Console.WriteLine("                                            [ ONE HEALTH - GATEWAY EDGE ]                                           ");
         Console.WriteLine(separador);
         Console.ResetColor();
-
         Console.Write($"  ESTADO: ");
         if (_isOnline) { Console.ForegroundColor = ConsoleColor.Green; Console.Write("ONLINE"); }
         else { Console.ForegroundColor = ConsoleColor.Red; Console.Write("OFFLINE"); }
         Console.ResetColor();
         Console.WriteLine($"   |   NODE ID: {_gatewayId}");
         Console.WriteLine(separador);
-
         List<string> leftCol = new List<string>();
         leftCol.Add("[ ALARMES & EVENTOS CRÍTICOS ]");
         if (_alarmesEsquerda.Count == 0) leftCol.Add("   Sem ocorrências.");
