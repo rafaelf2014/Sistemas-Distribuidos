@@ -1,4 +1,4 @@
-# ONE HEALTH — Sistema de Monitorização Ambiental Distribuído
+# Sistema de Monitorização Ambiental Distribuído - DEMO
 
 Projecto desenvolvido no âmbito da unidade curricular de **Sistemas Distribuídos**.  
 Simula uma rede de sensores ambientais distribuídos por duas cidades, com processamento de dados em três camadas: sensores, gateways de borda e servidor central.
