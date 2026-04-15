@@ -1,0 +1,10 @@
+[
+  {
+    "id": "S001",
+    "status": "desativado",
+    "zona": "CHAVES",
+    "tipos": "[TEMP,HUM]",
+    "videoStream": true,
+    "lastSync": "2026-04-15T12:01:10"
+  }
+]

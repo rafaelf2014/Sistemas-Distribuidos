@@ -1,0 +1,9 @@
+{
+  "sensorId": "S001",
+  "zona": "CHAVES",
+  "videoStream": true,
+  "leituras": [
+    { "tipo": "TEMP", "intervaloMs": 5000 },
+    { "tipo": "HUM", "intervaloMs": 5000 }
+  ]
+}

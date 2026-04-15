@@ -1,41 +1,83 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
-using System.Text;
 using System.Collections.Generic;
 using System.Linq;
 using System.Timers;
 using System.Globalization;
 using System.Threading;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Timer = System.Timers.Timer;
+
+// ==========================================
+// DTOs for JSON configs
+// ==========================================
+class AgregacaoConfig
+{
+    [JsonPropertyName("tipo")]        public string Tipo        { get; set; }
+    [JsonPropertyName("unidade")]     public string Unidade     { get; set; }
+    [JsonPropertyName("intervaloMs")] public int    IntervaloMs { get; set; }
+}
+
+class ConfigGateway
+{
+    [JsonPropertyName("gatewayId")]   public string              GatewayId  { get; set; } = "Gateway_001";
+    [JsonPropertyName("agregacoes")]  public List<AgregacaoConfig> Agregacoes { get; set; } = new();
+}
+
+class SensorEntry
+{
+    [JsonPropertyName("id")]          public string Id          { get; set; }
+    [JsonPropertyName("status")]      public string Status      { get; set; }
+    [JsonPropertyName("zona")]        public string Zona        { get; set; }
+    [JsonPropertyName("tipos")]       public string Tipos       { get; set; }
+    [JsonPropertyName("videoStream")] public bool   VideoStream { get; set; }
+    [JsonPropertyName("lastSync")]    public string LastSync    { get; set; }
+}
 
 class MyTcpListener
 {
-    private static string _gatewayId = "Gateway_001";
-    static readonly string pastaProjeto = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, @"..\..\..\"));
-    static readonly string caminhoFicheiro = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, @"..\..\..\sensores.csv"));
-    static readonly object fileLock = new object();
+    static string _gatewayId = "Gateway_001";
+
+    static readonly string pastaProjeto  = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, @"..\..\..\"));
+    static readonly string caminhoSensores = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, @"..\..\..\sensores.json"));
+    static readonly string caminhoAlarmes  = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, @"..\..\..\config_alarmes.json"));
+
+    static readonly object fileLock       = new object();
     static readonly object _bufferFileLock = new object();
-    
-    static List<Timer> _timersAgregacao = new List<Timer>();
+    static readonly object _alarmesLock   = new object();
+
+    // Cached JSON options
+    static readonly JsonSerializerOptions _jsonRead  = new() { PropertyNameCaseInsensitive = true };
+    static readonly JsonSerializerOptions _jsonWrite = new() { WriteIndented = true };
+
+    // In-memory sensor registry: (Status, Zona, Tipos, VideoStream, LastSync)
+    // Eliminates file reads on every DATA_SEND — validated under fileLock.
+    static readonly Dictionary<string, (string Status, string Zona, string Tipos, bool VideoStream, DateTime LastSync)>
+        _sensoresCache = new();
+
+    static readonly List<Timer> _timersAgregacao = new();
     static Timer _timerWatchdog;
     static TcpListener server = null;
 
-    static Dictionary<string, string> _unidadesMedida = new Dictionary<string, string>();
+    static readonly Dictionary<string, string> _unidadesMedida  = new();
+    static          Dictionary<string, Dictionary<string, double>> _limitesAlarme = new();
+    static readonly Dictionary<string, long>   _janelasTemporais = new();
 
-    private static readonly object _consoleLock = new object();
-    private static List<string> _alarmesEsquerda = new List<string>(); 
-    private static List<string> _logsEsquerda = new List<string>();    
-    private static List<string> _logsDireita = new List<string>();     
+    private static readonly object       _consoleLock   = new object();
+    private static readonly List<string> _alarmesEsquerda = new();
+    private static readonly List<string> _logsEsquerda    = new();
+    private static readonly List<string> _logsDireita      = new();
     private static bool _isOnline = true;
 
     public static void Main()
     {
-        Console.CancelKeyPress += new ConsoleCancelEventHandler(TratarEncerramento);
-        InicializarFicheiroConfiguracao();
-        
+        Console.CancelKeyPress += TratarEncerramento;
+        InicializarSensoresJson();
         InicializarTimersGateway();
+        InicializarFicheiroAlarmesJson();
 
         _timerWatchdog = new Timer(10000);
         _timerWatchdog.Elapsed += VerificarSensoresPerdidos;
@@ -44,90 +86,269 @@ class MyTcpListener
 
         try
         {
-            Int32 port = 5000;
-            server = new TcpListener(IPAddress.Any, port);
+            server = new TcpListener(IPAddress.Any, 5000);
             server.Start();
-
-            RegistarLogEsquerda($"À escuta de sensores (Qualquer IP) na porta {port}...");
+            RegistarLogEsquerda("A escuta de sensores na porta 5000...");
 
             while (true)
             {
                 TcpClient client = server.AcceptTcpClient();
-                Thread threadSensor = new Thread(() => HandleSensor(client));
-                threadSensor.Start();
+                new Thread(() => HandleSensor(client)).Start();
             }
         }
         catch (SocketException) { RegistarLogEsquerda("Sistema de escuta interrompido."); }
         finally { server?.Stop(); }
     }
 
-    static void InicializarTimersGateway()
+    // ==========================================
+    // ALARMES JSON
+    // ==========================================
+    static void InicializarFicheiroAlarmesJson()
     {
-        string caminhoConfig = Path.Combine(pastaProjeto, "config_gateway.csv");
-
-        // Formato -> DATATYPE ; UNIDADE ; INTERVALO_MS
-        if (!File.Exists(caminhoConfig))
+        lock (_alarmesLock)
         {
-            File.WriteAllText(caminhoConfig, "TEMP;ºC;30000\nHUM;%;60000\nCO2;ppm;90000\n");
-        }
-
-        string[] linhas = File.ReadAllLines(caminhoConfig);
-
-        foreach (string linha in linhas)
-        {
-            if (string.IsNullOrWhiteSpace(linha)) continue;
-            string[] col = linha.Split(';');
-            if (col.Length >= 3) // Precisa de Tipo, Unidade e Intervalo
+            if (!File.Exists(caminhoAlarmes))
             {
-                string tipoDado = col[0].Trim().ToUpper();
-                string unidade = col[1].Trim();
-                
-                if (int.TryParse(col[2].Trim(), out int intervalo))
+                _limitesAlarme = new();
+                GuardarAlarmesJson();
+            }
+            else
+            {
+                try
                 {
-                    _unidadesMedida[tipoDado] = unidade;
-
-                    Timer t = new Timer(intervalo);
-                    t.Elapsed += (s, e) => ProcessarAgregadosFiltrados(tipoDado);
-                    t.AutoReset = true;
-                    t.Start();
-                    _timersAgregacao.Add(t);
-                    RegistarLogEsquerda($"SYS: Agregador [{tipoDado}] ({unidade}) a cada {intervalo / 1000}s.");
+                    _limitesAlarme = JsonSerializer.Deserialize<Dictionary<string, Dictionary<string, double>>>(
+                        File.ReadAllText(caminhoAlarmes), _jsonRead) ?? new();
                 }
+                catch { _limitesAlarme = new(); }
             }
         }
     }
 
+    static void GuardarAlarmesJson()
+    {
+        File.WriteAllText(caminhoAlarmes, JsonSerializer.Serialize(_limitesAlarme, _jsonWrite));
+    }
+
+    static void AutoPopularAlarmes(string zona, string tiposComBrackets)
+    {
+        string[] tipos = tiposComBrackets.Replace("[", "").Replace("]", "").Split(',');
+
+        lock (_alarmesLock)
+        {
+            bool modificado = false;
+            string z = zona.ToUpper();
+
+            if (!_limitesAlarme.ContainsKey(z))
+            {
+                _limitesAlarme[z] = new();
+                modificado = true;
+                RegistarLogEsquerda($"AUTO-DISCOVERY: Nova Zona '{z}' detetada.");
+            }
+
+            foreach (string t in tipos)
+            {
+                string tipo = t.Trim().ToUpper();
+                if (!string.IsNullOrEmpty(tipo) && !_limitesAlarme[z].ContainsKey(tipo))
+                {
+                    _limitesAlarme[z][tipo] = -1.0;
+                    modificado = true;
+                }
+            }
+
+            if (modificado) GuardarAlarmesJson();
+        }
+    }
+
+    // ==========================================
+    // GATEWAY CONFIG (config_gateway.json)
+    // ==========================================
+    static void InicializarTimersGateway()
+    {
+        string caminho = Path.Combine(pastaProjeto, "config_gateway.json");
+
+        if (!File.Exists(caminho))
+        {
+            var def = new ConfigGateway
+            {
+                GatewayId = _gatewayId,
+                Agregacoes = new()
+                {
+                    new AgregacaoConfig { Tipo = "TEMP",  Unidade = "ºC",  IntervaloMs = 30000 },
+                    new AgregacaoConfig { Tipo = "HUM",   Unidade = "%",   IntervaloMs = 60000 },
+                    new AgregacaoConfig { Tipo = "CO2",   Unidade = "ppm", IntervaloMs = 90000 },
+                    new AgregacaoConfig { Tipo = "RUIDO", Unidade = "dB",  IntervaloMs = 40000 }
+                }
+            };
+            File.WriteAllText(caminho, JsonSerializer.Serialize(def, _jsonWrite));
+        }
+
+        var cfg = JsonSerializer.Deserialize<ConfigGateway>(File.ReadAllText(caminho), _jsonRead)!;
+        _gatewayId = cfg.GatewayId;
+
+        foreach (var ag in cfg.Agregacoes)
+        {
+            string tipo = ag.Tipo.ToUpper();
+            _unidadesMedida[tipo]  = ag.Unidade;
+            _janelasTemporais[tipo] = DateTime.Now.Ticks;
+
+            Timer t = new Timer(ag.IntervaloMs);
+            t.Elapsed += (_, _) => ProcessarAgregadosFiltrados(tipo);
+            t.AutoReset = true;
+            t.Start();
+            _timersAgregacao.Add(t);
+        }
+    }
+
+    // ==========================================
+    // SENSOR REGISTRY (sensores.json)
+    // ==========================================
+    static void InicializarSensoresJson()
+    {
+        lock (fileLock)
+        {
+            if (!File.Exists(caminhoSensores)) { File.WriteAllText(caminhoSensores, "[]"); return; }
+
+            try
+            {
+                var lista = JsonSerializer.Deserialize<List<SensorEntry>>(
+                    File.ReadAllText(caminhoSensores), _jsonRead) ?? new();
+
+                foreach (var s in lista)
+                {
+                    DateTime.TryParse(s.LastSync, out var lastSync);
+                    _sensoresCache[s.Id] = (s.Status, s.Zona, s.Tipos, s.VideoStream, lastSync);
+                }
+            }
+            catch { }
+        }
+    }
+
+    // Rebuilds sensores.json from the in-memory cache. Must be called inside fileLock.
+    static void PersistirCacheParaJson()
+    {
+        var lista = _sensoresCache.Select(kv => new SensorEntry
+        {
+            Id          = kv.Key,
+            Status      = kv.Value.Status,
+            Zona        = kv.Value.Zona,
+            Tipos       = kv.Value.Tipos,
+            VideoStream = kv.Value.VideoStream,
+            LastSync    = kv.Value.LastSync.ToString("yyyy-MM-ddTHH:mm:ss")
+        }).ToList();
+
+        File.WriteAllText(caminhoSensores, JsonSerializer.Serialize(lista, _jsonWrite));
+    }
+
+    static void RegistarOuAtualizarSensor(string id, string zona, string tipos, bool videoStream)
+    {
+        lock (fileLock)
+        {
+            bool novo = !_sensoresCache.ContainsKey(id);
+            _sensoresCache[id] = ("ativo", zona, tipos, videoStream, DateTime.Now);
+            PersistirCacheParaJson();
+            RegistarLogEsquerda(novo ? $"Config: Novo sensor {id} registado." : $"Config: Sensor {id} atualizado.");
+        }
+    }
+
+    // O(1) cache lookup — no file I/O on the hot DATA_SEND path
+    static bool ValidarSensor(string id, string tipoDados)
+    {
+        lock (fileLock)
+        {
+            return _sensoresCache.TryGetValue(id, out var s) && s.Status == "ativo" && s.Tipos.Contains(tipoDados);
+        }
+    }
+
+    // Heartbeats update only the cache — no disk write every 5 seconds per sensor
+    static void AtualizarLastSync(string id)
+    {
+        lock (fileLock)
+        {
+            if (_sensoresCache.TryGetValue(id, out var s))
+                _sensoresCache[id] = (s.Status, s.Zona, s.Tipos, s.VideoStream, DateTime.Now);
+        }
+    }
+
+    static void AtualizarEstadoSensor(string id, string estado)
+    {
+        lock (fileLock)
+        {
+            if (_sensoresCache.TryGetValue(id, out var s))
+                _sensoresCache[id] = (estado, s.Zona, s.Tipos, s.VideoStream, s.LastSync);
+            PersistirCacheParaJson();
+            RegistarLogEsquerda($"Sensor {id} {estado}.");
+        }
+    }
+
+    static string ObterZonaDoSensor(string id)
+    {
+        lock (fileLock)
+        {
+            return _sensoresCache.TryGetValue(id, out var s) ? s.Zona : "ZONA DESCONHECIDA";
+        }
+    }
+
+    static void VerificarSensoresPerdidos(object sender, ElapsedEventArgs e)
+    {
+        lock (fileLock)
+        {
+            bool alterado = false;
+            foreach (var id in _sensoresCache.Keys.ToList())
+            {
+                var s = _sensoresCache[id];
+                if (s.Status == "ativo" && (DateTime.Now - s.LastSync).TotalSeconds > 30)
+                {
+                    _sensoresCache[id] = ("perdido", s.Zona, s.Tipos, s.VideoStream, s.LastSync);
+                    alterado = true;
+                    RegistarLogEsquerda($"Watchdog: Sensor {id} perdido (Timeout).", true);
+                }
+            }
+            if (alterado) PersistirCacheParaJson();
+        }
+    }
+
+    // ==========================================
+    // AGREGAÇÃO
+    // ==========================================
     static void ProcessarAgregadosFiltrados(string tipoDadoFiltro)
     {
+        long tickNovo;
         lock (_bufferFileLock)
         {
-            foreach (string ficheiro in Directory.GetFiles(pastaProjeto, $"buffer_*_{tipoDadoFiltro}.csv"))
-            {
-                try { File.Move(ficheiro, Path.Combine(pastaProjeto, Path.GetFileName(ficheiro).Replace("buffer_", $"pendente_{DateTime.Now.Ticks}_"))); } catch { }
-            }
+            tickNovo = DateTime.Now.Ticks;
+            _janelasTemporais[tipoDadoFiltro] = tickNovo;
         }
 
         foreach (string ficheiro in Directory.GetFiles(pastaProjeto, $"pendente_*_{tipoDadoFiltro}.csv"))
         {
+            if (ficheiro.Contains($"pendente_{tickNovo}_")) continue;
+
             try
             {
                 string[] partes = Path.GetFileNameWithoutExtension(ficheiro).Split('_');
-                if (partes.Length != 4) continue; 
-                string ticksStr = partes[1]; string sensorId = partes[2]; string tipoDado = partes[3];
+                if (partes.Length != 4) continue;
+
+                string ticksStr  = partes[1];
+                string sensorId  = partes[2];
+                string tipoDado  = partes[3];
 
                 string[] linhas = File.ReadAllLines(ficheiro);
                 if (linhas.Length == 0) { File.Delete(ficheiro); continue; }
 
-                List<double> valores = new List<double>();
-                foreach (string linha in linhas) { if (double.TryParse(linha, NumberStyles.Any, CultureInfo.InvariantCulture, out double val)) valores.Add(val); }
+                var valores = linhas
+                    .Where(l => double.TryParse(l, NumberStyles.Any, CultureInfo.InvariantCulture, out _))
+                    .Select(l => double.Parse(l, NumberStyles.Any, CultureInfo.InvariantCulture))
+                    .ToList();
 
                 if (valores.Count > 0)
                 {
                     double media = valores.Average();
-                    string timestampHistorico = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss");
-                    if (long.TryParse(ticksStr, out long ticksOriginais)) timestampHistorico = new DateTime(ticksOriginais).ToString("yyyy-MM-ddTHH:mm:ss");
+                    string ts = long.TryParse(ticksStr, out long ticks)
+                        ? new DateTime(ticks).ToString("yyyy-MM-ddTHH:mm:ss")
+                        : DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss");
 
-                    if (EnviarParaServidor($"DATA_SEND|{sensorId}|{tipoDado}|{media.ToString("F2", CultureInfo.InvariantCulture)}|{timestampHistorico}"))
+                    if (EnviarParaServidor("DATA_FORWARD", sensorId, tipoDado,
+                            media.ToString("F2", CultureInfo.InvariantCulture), ts))
                     {
                         File.Delete(ficheiro);
                         RegistarLogEsquerda($"Forward pendente de {sensorId} ({tipoDado}) OK.");
@@ -139,67 +360,105 @@ class MyTcpListener
         }
     }
 
+    // ==========================================
+    // HANDLER DE SENSORES
+    // ==========================================
     static void HandleSensor(TcpClient client)
     {
         try
         {
             using NetworkStream stream = client.GetStream();
-            using StreamReader reader = new StreamReader(stream);
-            using StreamWriter writer = new StreamWriter(stream) { AutoFlush = true };
-            
+            using StreamReader  reader = new StreamReader(stream);
+            using StreamWriter  writer = new StreamWriter(stream) { AutoFlush = true };
+
             string rawData;
             while ((rawData = reader.ReadLine()) != null)
             {
-                string[] parts = rawData.Split('|');
-                string command = parts[0].ToUpper();
+                string[] parts  = rawData.Split('|');
+                string command  = parts[0].ToUpper();
                 string resposta = "ACK_OK";
 
                 switch (command)
                 {
                     case "HELLO":
-                        if (parts.Length >= 4) RegistarOuAtualizarSensor(parts[1], parts[2], parts[3]);
+                        if (parts.Length >= 4)
+                        {
+                            // parts[4] = "true"/"false" — video streaming capability
+                            bool videoCapable = parts.Length >= 5 &&
+                                                bool.TryParse(parts[4], out bool vc) && vc;
+
+                            RegistarOuAtualizarSensor(parts[1], parts[2], parts[3], videoCapable);
+                            AutoPopularAlarmes(parts[2], parts[3]);
+
+                            // Notify server about this sensor (no locks held here)
+                            EnviarRegistoSensorParaServidor(parts[1], parts[2], parts[3], videoCapable);
+                        }
                         resposta = "ACK_HELLO|OK";
                         break;
 
                     case "DATA_SEND":
-                        if (double.TryParse(parts[3], NumberStyles.Any, CultureInfo.InvariantCulture, out double valor))
+                        if (parts.Length >= 5 &&
+                            double.TryParse(parts[3], NumberStyles.Any, CultureInfo.InvariantCulture, out double valor))
                         {
                             if (ValidarSensor(parts[1], parts[2]))
                             {
-                                lock (_bufferFileLock) { File.AppendAllText(Path.Combine(pastaProjeto, $"buffer_{parts[1]}_{parts[2]}.csv"), valor.ToString(CultureInfo.InvariantCulture) + Environment.NewLine); }
-                                
-                                // Vai buscar a unidade, se não existir mete string vazia
-                                string un = _unidadesMedida.ContainsKey(parts[2]) ? _unidadesMedida[parts[2]] : "";
-                                RegistarLogEsquerda($"{parts[1]}: {parts[2]} = {valor}{un}");
-                                
-                                resposta = "ACK_DATA|OK";
+                                string sensorId  = parts[1];
+                                string tipoDado  = parts[2].ToUpper();
+                                string timestamp = parts[4];
+                                string zona      = ObterZonaDoSensor(sensorId).ToUpper();
+
+                                // Read the tick under lock; do file I/O outside to minimise lock hold time
+                                long tickAtivo;
+                                lock (_bufferFileLock)
+                                {
+                                    tickAtivo = _janelasTemporais.TryGetValue(tipoDado, out long tk)
+                                        ? tk : DateTime.Now.Ticks;
+                                }
+                                File.AppendAllText(
+                                    Path.Combine(pastaProjeto, $"pendente_{tickAtivo}_{sensorId}_{tipoDado}.csv"),
+                                    valor.ToString(CultureInfo.InvariantCulture) + Environment.NewLine);
+
+                                string un = _unidadesMedida.TryGetValue(tipoDado, out string u) ? u : "";
+
+                                bool isAnomalia = false;
+                                lock (_alarmesLock)
+                                {
+                                    if (_limitesAlarme.TryGetValue(zona, out var z) &&
+                                        z.TryGetValue(tipoDado, out double limite) &&
+                                        limite != -1.0 && valor > limite)
+                                        isAnomalia = true;
+                                }
+
+                                if (isAnomalia)
+                                {
+                                    RegistarLogEsquerda(
+                                        $"EDGE ANALYTICS: Anomalia em {sensorId}! ({tipoDado} = {valor}{un} @ {zona})", true);
+
+                                    // Log whether this sensor can provide a video feed
+                                    bool temVideo;
+                                    lock (fileLock)
+                                    {
+                                        temVideo = _sensoresCache.TryGetValue(sensorId, out var sc) && sc.VideoStream;
+                                    }
+                                    if (temVideo)
+                                        RegistarLogEsquerda($"[VIDEO] {sensorId} tem capacidade de streaming.", true);
+
+                                    EnviarParaServidor("ALARM_FORWARD", sensorId, tipoDado, parts[3], timestamp);
+                                    resposta = "ACK_DATA|ALARM_DETECTED";
+                                }
+                                else
+                                {
+                                    RegistarLogEsquerda($"{sensorId}: {tipoDado} = {valor}{un}");
+                                    resposta = "ACK_DATA|OK";
+                                }
                             }
                             else resposta = "ACK_DATA|ERRO_VALIDACAO";
                         }
                         break;
-                    
-                    case "ALARM_SEND":
-                        if (ValidarSensor(parts[1], parts[2]))
-                        {
-                            lock (_bufferFileLock) { File.AppendAllText(Path.Combine(pastaProjeto, $"buffer_{parts[1]}_{parts[2]}.csv"), parts[3] + Environment.NewLine); }
-                            
-                            string un = _unidadesMedida.ContainsKey(parts[2]) ? _unidadesMedida[parts[2]] : "";
-                            RegistarLogEsquerda($"ANOMALIA: {parts[1]} registou {parts[3]}{un}!", true);
-                            
-                            EnviarParaServidor(rawData); 
-                            resposta = "ACK_ALARM|OK";
-                        }
-                        else resposta = "ACK_ALARM|ERRO_VALIDACAO";
-                        break;
 
                     case "HEARTBEAT":
-                        atualizarLastSync(parts[1]);
+                        AtualizarLastSync(parts[1]);
                         resposta = "ACK_HEARTBEAT|OK";
-                        break;
-
-                    case "VIDEO_REQ":
-                        RegistarLogEsquerda($"EDGE: Vídeo pedido por {parts[1]}...", true);
-                        resposta = "ACK_VIDEO|OK";
                         break;
 
                     case "BYE":
@@ -211,109 +470,63 @@ class MyTcpListener
                         resposta = "ACK_ERR|Comando Desconhecido";
                         break;
                 }
+
                 writer.WriteLine(resposta);
                 if (command == "BYE") break;
             }
         }
-        catch (Exception) { }
+        catch (Exception ex) { RegistarLogEsquerda($"Erro no handler do sensor: {ex.Message}"); }
         finally { client.Close(); }
     }
 
-    static void InicializarFicheiroConfiguracao() { lock (fileLock) { if (!File.Exists(caminhoFicheiro)) File.WriteAllText(caminhoFicheiro, ""); } }
-
-    static void RegistarOuAtualizarSensor(string id, string zona, string tipos)
-    {
-        lock (fileLock)
-        {
-            if (!File.Exists(caminhoFicheiro)) return;
-            var linhas = File.ReadAllLines(caminhoFicheiro).ToList();
-            bool encontrado = false;
-            string timestamp = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss");
-
-            for (int i = 0; i < linhas.Count; i++)
-            {
-                var col = linhas[i].Split(';');
-                if (col.Length >= 5 && col[0].Trim() == id.Trim())
-                {
-                    col[1] = "ativo"; col[2] = zona; col[3] = tipos; col[4] = timestamp;
-                    linhas[i] = string.Join(";", col);
-                    encontrado = true;
-                    RegistarLogEsquerda($"Config: Sensor {id} atualizado.");
-                    break;
-                }
-            }
-            if (!encontrado)
-            {
-                linhas.Add($"{id};ativo;{zona};{tipos};{timestamp}");
-                RegistarLogEsquerda($"Config: Novo sensor {id} registado.");
-            }
-            File.WriteAllLines(caminhoFicheiro, linhas);
-        }
-    }
-
-    static bool ValidarSensor(string id, string tipoDados) { lock (fileLock) { if (!File.Exists(caminhoFicheiro)) return false; return File.ReadAllLines(caminhoFicheiro).Select(l => l.Split(';')).Any(c => c.Length >= 5 && c[0] == id && c[1] == "ativo" && c[3].Contains(tipoDados)); } }
-    
-    static void atualizarLastSync(string id) { lock (fileLock) { if (!File.Exists(caminhoFicheiro)) return; var linhas = File.ReadAllLines(caminhoFicheiro); for (int i = 0; i < linhas.Length; i++) { var col = linhas[i].Split(';'); if (col.Length >= 5 && col[0].Trim() == id.Trim()) { col[4] = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss"); linhas[i] = string.Join(";", col); File.WriteAllLines(caminhoFicheiro, linhas); break; } } } }
-    
-    static void AtualizarEstadoSensor(string id, string estado) { lock (fileLock) { if (!File.Exists(caminhoFicheiro)) return; var linhas = File.ReadAllLines(caminhoFicheiro); for (int i = 0; i < linhas.Length; i++) { var col = linhas[i].Split(';'); if (col.Length >= 5 && col[0].Trim() == id.Trim()) { col[1] = estado; linhas[i] = string.Join(";", col); File.WriteAllLines(caminhoFicheiro, linhas); RegistarLogEsquerda($"Sensor {id} {estado}."); break; } } } }
-    
-    static string ObterZonaDoSensor(string id) { lock (fileLock) { if (!File.Exists(caminhoFicheiro)) return "ZONA DESCONHECIDA"; foreach (var linha in File.ReadAllLines(caminhoFicheiro)) { var col = linha.Split(';'); if (col.Length >= 5 && col[0].Trim() == id.Trim()) return col[2]; } } return "ZONA DESCONHECIDA"; }
-
-    static void VerificarSensoresPerdidos(object sender, ElapsedEventArgs e)
-    {
-        lock (fileLock)
-        {
-            if (!File.Exists(caminhoFicheiro)) return;
-            var linhas = File.ReadAllLines(caminhoFicheiro).ToList();
-            bool alterado = false;
-            for (int i = 0; i < linhas.Count; i++)
-            {
-                var col = linhas[i].Split(';');
-                if (col.Length >= 5 && col[1] == "ativo" && DateTime.TryParse(col[4], out DateTime lastSync) && (DateTime.Now - lastSync).TotalSeconds > 30)
-                {
-                    col[1] = "perdido"; linhas[i] = string.Join(";", col); alterado = true;
-                    RegistarLogEsquerda($"Watchdog: Sensor {col[0]} perdido (Timeout).", true);
-                }
-            }
-            if (alterado) File.WriteAllLines(caminhoFicheiro, linhas);
-        }
-    }
-
-    static bool EnviarParaServidor(string data)
+    // ==========================================
+    // COMUNICAÇÃO COM SERVIDOR
+    // ==========================================
+    static bool EnviarParaServidor(string tipo, string sensorId, string tipoDado, string valor, string timestamp)
     {
         try
         {
-            using (TcpClient sc = new TcpClient("127.0.0.1", 14000))
-            using (NetworkStream s = sc.GetStream())
-            using (StreamReader r = new StreamReader(s))
-            using (StreamWriter w = new StreamWriter(s) { AutoFlush = true })
-            {
-                string[] p = data.Split('|');
-                string comandoForward = p[0] == "ALARM_SEND" ? "ALARM_FORWARD" : "DATA_FORWARD";
-                
-                string modified = $"{comandoForward}|{_gatewayId}|{p[1]}|{ObterZonaDoSensor(p[1])}|{p[2]}|{p[3]}|{p[4]}";
-                w.WriteLine(modified);
-                
-                string resposta = r.ReadLine();
-                
-                string tag = comandoForward == "ALARM_FORWARD" ? "[ALARM]" : "[DATA]";
-                string un = _unidadesMedida.ContainsKey(p[2]) ? _unidadesMedida[p[2]] : "";
-                string msgVisor = $"{tag} {p[1]} ({p[2]}={p[3]}{un})"; // INCLUI UNIDADE
-                
-                RegistarLogDireita($"ENVIADO: {msgVisor}", $"RESPOSTA: {resposta}");
+            using TcpClient  sc = new TcpClient("127.0.0.1", 14000);
+            using var         s = sc.GetStream();
+            using StreamReader r = new StreamReader(s);
+            using StreamWriter w = new StreamWriter(s) { AutoFlush = true };
 
-                if (resposta != null && resposta.Contains("STATUS OK")) return true;
-            }
+            string zona = ObterZonaDoSensor(sensorId);
+            w.WriteLine($"{tipo}|{_gatewayId}|{sensorId}|{zona}|{tipoDado}|{valor}|{timestamp}");
+
+            string resposta = r.ReadLine();
+            string tag = tipo == "ALARM_FORWARD" ? "[ALARM]" : "[DATA]";
+            string un  = _unidadesMedida.TryGetValue(tipoDado, out string u) ? u : "";
+            RegistarLogDireita($"ENVIADO: {tag} {sensorId} ({tipoDado}={valor}{un})", $"RESPOSTA: {resposta}");
+
+            return resposta != null && resposta.Contains("STATUS OK");
         }
-        catch (Exception ex) 
-        { 
-            RegistarLogDireita($"ENVIADO: [Tentativa Falhada]", $"ERRO: {ex.Message}");
+        catch (Exception ex)
+        {
+            RegistarLogDireita("ENVIADO: [Tentativa Falhada]", $"ERRO: {ex.Message}");
+            return false;
         }
-        return false;
+    }
+
+    // Informs the server that a sensor registered with the gateway (and whether it has video capability).
+    // Called with no locks held — may fail silently if server is not yet running.
+    static void EnviarRegistoSensorParaServidor(string sensorId, string zona, string tipos, bool videoCapable)
+    {
+        try
+        {
+            using TcpClient  sc = new TcpClient("127.0.0.1", 14000);
+            using var         s = sc.GetStream();
+            using StreamReader r = new StreamReader(s);
+            using StreamWriter w = new StreamWriter(s) { AutoFlush = true };
+
+            w.WriteLine($"SENSOR_REG|{_gatewayId}|{sensorId}|{zona}|{tipos}|{(videoCapable ? "true" : "false")}");
+            r.ReadLine(); // consume ACK
+        }
+        catch { /* Server may not be running yet; no retry needed — sensor will re-HELLO on reconnect */ }
     }
 
     // ==========================================
-    // LÓGICA DO DASHBOARD UI
+    // TUI
     // ==========================================
     static void RegistarLogEsquerda(string mensagem, bool isAlarm = false)
     {
@@ -341,7 +554,6 @@ class MyTcpListener
             string t = DateTime.Now.ToString("HH:mm:ss");
             _logsDireita.Insert(0, $"   └─> {msgResposta}");
             _logsDireita.Insert(0, $"[{t}] {msgEnvio}");
-            
             while (_logsDireita.Count > 20) _logsDireita.RemoveAt(_logsDireita.Count - 1);
             DesenharDashboard();
         }
@@ -349,83 +561,78 @@ class MyTcpListener
 
     static void DesenharDashboard()
     {
-        Console.Clear();
-        string separador = new string('=', 118);
-        
+        try { Console.SetCursorPosition(0, 0); } catch { Console.Clear(); }
+        Console.CursorVisible = false;
+
+        string sep = new string('=', 118);
+
         Console.ForegroundColor = ConsoleColor.Cyan;
-        Console.WriteLine(separador);
+        Console.WriteLine(sep);
         Console.WriteLine("                                            [ ONE HEALTH - GATEWAY EDGE ]                                           ");
-        Console.WriteLine(separador);
+        Console.WriteLine(sep);
         Console.ResetColor();
-        
-        Console.Write($"  ESTADO: ");
-        if (_isOnline) { Console.ForegroundColor = ConsoleColor.Green; Console.Write("ONLINE"); }
-        else { Console.ForegroundColor = ConsoleColor.Red; Console.Write("OFFLINE"); }
+
+        Console.Write("  ESTADO: ");
+        if (_isOnline) { Console.ForegroundColor = ConsoleColor.Green; Console.Write("ONLINE "); }
+        else           { Console.ForegroundColor = ConsoleColor.Red;   Console.Write("OFFLINE"); }
         Console.ResetColor();
-        Console.WriteLine($"   |   NODE ID: {_gatewayId}");
-        Console.WriteLine(separador);
-        
-        List<string> leftCol = new List<string>();
-        leftCol.Add("[ ALARMES & EVENTOS CRÍTICOS ]");
-        if (_alarmesEsquerda.Count == 0) leftCol.Add("   Sem ocorrências.");
+        Console.WriteLine($"   |   NODE ID: {_gatewayId}".PadRight(90));
+        Console.WriteLine(sep);
+
+        var leftCol  = new List<string>();
+        var rightCol = new List<string>();
+
+        leftCol.Add("[ ALARMES & EVENTOS CRITICOS ]");
+        if (_alarmesEsquerda.Count == 0) leftCol.Add("   Sem ocorrencias.");
         else foreach (var a in _alarmesEsquerda) leftCol.Add("!!! " + a);
-        while (leftCol.Count < 12) leftCol.Add(""); 
+        while (leftCol.Count < 12) leftCol.Add("");
 
-        leftCol.Add("[ TRÁFEGO RECEBIDO (SENSORES) ]");
+        leftCol.Add("[ TRAFEGO RECEBIDO (SENSORES) ]");
         foreach (var l in _logsEsquerda) leftCol.Add("> " + l);
-        while (leftCol.Count < 24) leftCol.Add(""); 
+        while (leftCol.Count < 24) leftCol.Add("");
 
-        List<string> rightCol = new List<string>();
         rightCol.Add("[ OUTPUT PARA O SERVIDOR CENTRAL ]");
         foreach (var r in _logsDireita) rightCol.Add(r);
         while (rightCol.Count < 24) rightCol.Add("");
 
         for (int i = 0; i < 24; i++)
         {
-            string left = leftCol[i].Length > 56 ? leftCol[i].Substring(0, 53) + "..." : leftCol[i];
+            string left  = leftCol[i].Length  > 56 ? leftCol[i].Substring(0, 53)  + "..." : leftCol[i];
             string right = rightCol[i].Length > 58 ? rightCol[i].Substring(0, 55) + "..." : rightCol[i];
-            
-            if (left.Contains("!!!") || left.Contains("ANOMALIA") || left.Contains("Falha Servidor") || left.Contains("Watchdog")) 
-                Console.ForegroundColor = ConsoleColor.Red;
-            else if (left.Contains("[ ALARMES") || left.Contains("[ TRÁFEGO")) 
-                Console.ForegroundColor = ConsoleColor.Cyan;
-            else 
-                Console.ForegroundColor = ConsoleColor.Gray;
 
+            if      (left.Contains("!!!") || left.Contains("Falha") || left.Contains("Watchdog")) Console.ForegroundColor = ConsoleColor.Red;
+            else if (left.Contains("[ ALARMES") || left.Contains("[ TRAFEGO"))                   Console.ForegroundColor = ConsoleColor.Cyan;
+            else if (left.Contains("[VIDEO]"))                                                    Console.ForegroundColor = ConsoleColor.Magenta;
+            else                                                                                  Console.ForegroundColor = ConsoleColor.Gray;
             Console.Write(left.PadRight(58));
 
             Console.ForegroundColor = ConsoleColor.DarkGray;
             Console.Write(" | ");
 
-            if (right.Contains("[ALARM]")) 
-                Console.ForegroundColor = ConsoleColor.Yellow; 
-            else if (right.Contains("[DATA]")) 
-                Console.ForegroundColor = ConsoleColor.White;  
-            else if (right.Contains("STATUS OK")) 
-                Console.ForegroundColor = ConsoleColor.Green;  
-            else if (right.Contains("ERRO") || right.Contains("Falhada")) 
-                Console.ForegroundColor = ConsoleColor.Red;    
-            else if (right.Contains("[ OUTPUT")) 
-                Console.ForegroundColor = ConsoleColor.Cyan;
-            else 
-                Console.ForegroundColor = ConsoleColor.Gray;
+            if      (right.Contains("[ALARM]"))                         Console.ForegroundColor = ConsoleColor.Yellow;
+            else if (right.Contains("[DATA]"))                          Console.ForegroundColor = ConsoleColor.White;
+            else if (right.Contains("STATUS OK"))                       Console.ForegroundColor = ConsoleColor.Green;
+            else if (right.Contains("ERRO") || right.Contains("Falha")) Console.ForegroundColor = ConsoleColor.Red;
+            else if (right.Contains("[ OUTPUT"))                        Console.ForegroundColor = ConsoleColor.Cyan;
+            else                                                         Console.ForegroundColor = ConsoleColor.Gray;
+            Console.WriteLine(right.PadRight(57));
 
-            Console.WriteLine(right);
-            Console.ResetColor(); 
+            Console.ResetColor();
         }
-        
-        Console.WriteLine(separador);
-        Console.WriteLine(" Pressione Ctrl+C para desligar o Gateway de forma segura.");
+
+        Console.WriteLine(sep);
+        Console.WriteLine(" Pressione Ctrl+C para desligar o Gateway de forma segura.".PadRight(118));
     }
 
     static void TratarEncerramento(object sender, ConsoleCancelEventArgs args)
     {
-        args.Cancel = true; 
+        args.Cancel = true;
         _isOnline = false;
         RegistarLogEsquerda("A encerrar o Gateway. Dados em buffer salvaguardados.");
-        
+
         foreach (var t in _timersAgregacao) t.Stop();
         _timerWatchdog?.Stop();
+        GuardarAlarmesJson();
 
         server?.Stop();
         Thread.Sleep(500);

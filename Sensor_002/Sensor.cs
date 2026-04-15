@@ -1,19 +1,35 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Net.Sockets;
 using System.Timers;
 using System.Threading;
 using System.Collections.Generic;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Timer = System.Timers.Timer;
 
 namespace sensor
 {
+    // DTO for config_sensor.json
+    class LeituraConfig
+    {
+        [JsonPropertyName("tipo")]        public string Tipo        { get; set; }
+        [JsonPropertyName("intervaloMs")] public int    IntervaloMs { get; set; }
+    }
+
+    class ConfigSensor
+    {
+        [JsonPropertyName("sensorId")]    public string              SensorId    { get; set; } = "S???";
+        [JsonPropertyName("zona")]        public string              Zona        { get; set; } = "DESCONHECIDA";
+        [JsonPropertyName("videoStream")] public bool                VideoStream { get; set; } = false;
+        [JsonPropertyName("leituras")]    public List<LeituraConfig> Leituras    { get; set; } = new();
+    }
+
+    // Runtime per-reading config
     class SensorConfig
     {
-        public string TipoDado { get; set; }
-        public int IntervaloMs { get; set; }
-        public bool AlarmePossivel { get; set; }
-        public double LimiteAlarme { get; set; }
+        public string TipoDado    { get; set; }
+        public int    IntervaloMs { get; set; }
     }
 
     class Program
@@ -22,57 +38,56 @@ namespace sensor
         static StreamReader _reader;
         static readonly object streamLock = new object();
 
-        static string _idSensor = "S002";
-        static string _zona = "CHAVES";
-        static string _dataTypes = ""; 
+        static string _idSensor    = "S???";
+        static string _zona        = "DESCONHECIDA";
+        static bool   _videoStream = false;
+        static string _dataTypes   = "";
 
-        static int _intervaloHeartbeat = 5000;
         static Timer _timerHeartbeat;
-        static List<Timer> _timersDados = new List<Timer>();
+        static readonly List<Timer> _timersDados = new();
+        static readonly int _intervaloHeartbeat   = 5000;
 
-        private static readonly object _consoleLock = new object();
-        private static List<string> _ultimosLogs = new List<string>();
-        private static List<string> _ultimosAlarmes = new List<string>();
-        
-        // CORREÇÃO: O Estado volta a ser um bool real!
-        private static bool _isOnline = false;
-        private static bool _encerrando = false;
+        private static readonly object       _consoleLock = new object();
+        private static readonly List<string> _ultimosLogs = new();
+        private static readonly Random       _rng         = new();
+
+        // Cached JsonSerializerOptions instances — never create per-call
+        private static readonly JsonSerializerOptions _jsonRead  = new() { PropertyNameCaseInsensitive = true };
+        private static readonly JsonSerializerOptions _jsonWrite = new() { WriteIndented = true };
+
+        private static bool   _isOnline         = false;
+        private static bool   _encerrando       = false;
         private static string _gatewayConectado = "";
 
         static void Main(string[] args)
         {
-            Console.CancelKeyPress += new ConsoleCancelEventHandler(TratarEncerramento);
-
+            Console.CancelKeyPress += TratarEncerramento;
             string ipGateway = args.Length > 0 ? args[0] : "127.0.0.1";
-            int portGateway = 5000;
 
             List<SensorConfig> configs = CarregarConfiguracoes();
-
             DesenharDashboard();
-            ConfigurarTemporizadores(configs); 
+            ConfigurarTemporizadores(configs);
 
             while (!_encerrando)
             {
                 try
                 {
                     AlterarEstado(false, "A LIGAR...");
-                    
-                    using (TcpClient client = new TcpClient(ipGateway, portGateway))
+
+                    using (TcpClient client = new TcpClient(ipGateway, 5000))
                     using (NetworkStream stream = client.GetStream())
                     using (StreamReader reader = new StreamReader(stream))
                     using (StreamWriter writer = new StreamWriter(stream) { AutoFlush = true })
                     {
-                        AlterarEstado(true, "Gateway_001");
-                        _writer = writer;
-                        _reader = reader;
+                        // Assign writer/reader inside streamLock before _isOnline = true
+                        // so no timer thread can enter EnviarMensagem with a null writer
+                        lock (streamLock) { _writer = writer; _reader = reader; }
+                        AlterarEstado(true, "Gateway");
 
-                        EnviarMensagem($"HELLO|{_idSensor}|{_zona}|[{_dataTypes}]");
+                        // 5th field: video streaming capability flag
+                        EnviarMensagem($"HELLO|{_idSensor}|{_zona}|[{_dataTypes}]|{(_videoStream ? "true" : "false")}");
 
-                        // Fica a rodar enquanto o bool permitir
-                        while (_isOnline)
-                        {
-                            Thread.Sleep(1000);
-                        }
+                        while (_isOnline) Thread.Sleep(1000);
                     }
                 }
                 catch (Exception)
@@ -85,39 +100,29 @@ namespace sensor
 
         static List<SensorConfig> CarregarConfiguracoes()
         {
-            string caminhoConfig = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, @"..\..\..\config_sensor.csv"));
-            List<SensorConfig> lista = new List<SensorConfig>();
+            string caminho = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, @"..\..\..\config_sensor.json"));
 
-            if (!File.Exists(caminhoConfig))
+            if (!File.Exists(caminho))
             {
-                string defaultConfig = 
-                    "TEMP;3000;true;45.0\n" +
-                    "HUM;5000;false;0.0";
-                File.WriteAllText(caminhoConfig, defaultConfig);
-            }
-
-            string[] linhas = File.ReadAllLines(caminhoConfig);
-            List<string> tiposEncontrados = new List<string>();
-
-            foreach (string linha in linhas)
-            {
-                if (string.IsNullOrWhiteSpace(linha)) continue;
-                string[] col = linha.Split(';');
-                if (col.Length == 4)
+                var def = new ConfigSensor
                 {
-                    lista.Add(new SensorConfig
-                    {
-                        TipoDado = col[0].Trim().ToUpper(),
-                        IntervaloMs = int.Parse(col[1].Trim()),
-                        AlarmePossivel = bool.Parse(col[2].Trim()),
-                        LimiteAlarme = double.Parse(col[3].Trim(), System.Globalization.CultureInfo.InvariantCulture)
-                    });
-                    tiposEncontrados.Add(col[0].Trim().ToUpper());
-                }
+                    Leituras = new() { new LeituraConfig { Tipo = "TEMP", IntervaloMs = 5000 } }
+                };
+                File.WriteAllText(caminho, JsonSerializer.Serialize(def, _jsonWrite));
             }
 
-            _dataTypes = string.Join(",", tiposEncontrados);
-            return lista;
+            var cfg = JsonSerializer.Deserialize<ConfigSensor>(File.ReadAllText(caminho), _jsonRead)!;
+
+            _idSensor    = cfg.SensorId;
+            _zona        = cfg.Zona;
+            _videoStream = cfg.VideoStream;
+            _dataTypes   = string.Join(",", cfg.Leituras.ConvertAll(l => l.Tipo.ToUpper()));
+
+            return cfg.Leituras.ConvertAll(l => new SensorConfig
+            {
+                TipoDado    = l.Tipo.ToUpper(),
+                IntervaloMs = l.IntervaloMs
+            });
         }
 
         static void ConfigurarTemporizadores(List<SensorConfig> configs)
@@ -130,7 +135,7 @@ namespace sensor
             foreach (var cfg in configs)
             {
                 Timer t = new Timer(cfg.IntervaloMs);
-                t.Elapsed += (sender, e) => GerarEEnviarDado(cfg);
+                t.Elapsed += (_, _) => GerarEEnviarDado(cfg);
                 t.AutoReset = true;
                 t.Start();
                 _timersDados.Add(t);
@@ -141,29 +146,23 @@ namespace sensor
         {
             if (!_isOnline) return;
 
-            Random r = new Random();
-            double valorGerado = 0.0;
-
-            if (cfg.TipoDado == "CO2") valorGerado = r.NextDouble() * 550.0;
-            else valorGerado = r.NextDouble() * (cfg.LimiteAlarme + 20.0); // Fallback dinâmico
-
-            // Se o alarme estiver ativado na config E o valor aleatório ultrapassar, é anomalia!
-            bool isAnomalia = cfg.AlarmePossivel && (valorGerado > cfg.LimiteAlarme);
-            
-            string timestamp = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss");
-            string valStr = Math.Round(valorGerado, 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
-
-            if (isAnomalia)
+            double v = cfg.TipoDado switch
             {
-                RegistarLog($"ALERTA: Anomalia em {cfg.TipoDado}! ({valStr} excedeu {cfg.LimiteAlarme})", true);
-                EnviarMensagem($"ALARM_SEND|{_idSensor}|{cfg.TipoDado}|{valStr}|{timestamp}");
-                EnviarMensagem($"VIDEO_REQ|{_idSensor}");
-            }
-            else
-            {
-                RegistarLog($"{cfg.TipoDado}: {valStr} recolhido.");
-                EnviarMensagem($"DATA_SEND|{_idSensor}|{cfg.TipoDado}|{valStr}|{timestamp}");
-            }
+                "TEMP"  => _rng.NextDouble() * 50.0,
+                "HUM"   => _rng.NextDouble() * 100.0,
+                "CO2"   => _rng.NextDouble() * 550.0,
+                "RUIDO" => _rng.NextDouble() * 120.0,
+                _       => _rng.NextDouble() * 100.0
+            };
+
+            // 10% spike to exercise gateway alarm detection
+            if (_rng.Next(10) == 0) v += 60.0;
+
+            string ts  = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss");
+            string val = Math.Round(v, 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+            RegistarLog($"{cfg.TipoDado}: {val} recolhido.");
+            EnviarMensagem($"DATA_SEND|{_idSensor}|{cfg.TipoDado}|{val}|{ts}");
         }
 
         static void EnviarHeartbeatAutomatico(object sender, ElapsedEventArgs e)
@@ -178,6 +177,7 @@ namespace sensor
             {
                 try
                 {
+                    if (_writer == null) return;
                     _writer.WriteLine(mensagem);
                     string resposta = _reader.ReadLine();
                     if (resposta == null) AlterarEstado(false, "FALHA REDE");
@@ -186,33 +186,19 @@ namespace sensor
             }
         }
 
-        // ==========================================
-        // LÓGICA DO DASHBOARD 
-        // ==========================================
         static void AlterarEstado(bool status, string descricao)
         {
-            _isOnline = status;
-            _gatewayConectado = descricao; // Descrição UI ou GWID
+            _isOnline         = status;
+            _gatewayConectado = descricao;
             DesenharDashboard();
         }
 
-        static void RegistarLog(string mensagem, bool isAlarm = false)
+        static void RegistarLog(string mensagem)
         {
             lock (_consoleLock)
             {
-                string timestamp = DateTime.Now.ToString("HH:mm:ss");
-                string linha = $"[{timestamp}] {mensagem}";
-
-                if (isAlarm)
-                {
-                    _ultimosAlarmes.Insert(0, linha);
-                    if (_ultimosAlarmes.Count > 10) _ultimosAlarmes.RemoveAt(10);
-                }
-                else
-                {
-                    _ultimosLogs.Insert(0, linha);
-                    if (_ultimosLogs.Count > 10) _ultimosLogs.RemoveAt(10);
-                }
+                _ultimosLogs.Insert(0, $"[{DateTime.Now:HH:mm:ss}] {mensagem}");
+                if (_ultimosLogs.Count > 10) _ultimosLogs.RemoveAt(10);
                 DesenharDashboard();
             }
         }
@@ -220,78 +206,51 @@ namespace sensor
         static void DesenharDashboard()
         {
             Console.Clear();
-            string linhaSeparadora = new string('=', 110);
-            
-            Console.ForegroundColor = ConsoleColor.Cyan;
-            Console.WriteLine(linhaSeparadora);
-            Console.WriteLine("                                             [ ONE HEALTH - SENSOR ]                                             ");
-            Console.WriteLine(linhaSeparadora);
-            Console.ResetColor();
-            
-            Console.Write($"  ID: {_idSensor} | ZONA: {_zona} | REDE: ");
-            
-            if (_isOnline) 
-            {
-                Console.ForegroundColor = ConsoleColor.Green;
-                Console.WriteLine($"ONLINE ({_gatewayConectado})");
-            }
-            else 
-            {
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine($"OFFLINE / {_gatewayConectado}");
-            }
-            Console.ResetColor();
-            
-            Console.ForegroundColor = ConsoleColor.Cyan;
-            Console.WriteLine(linhaSeparadora);
-            Console.ResetColor();
-            
-            Console.WriteLine("\n[ ÚLTIMOS 10 EVENTOS CRÍTICOS (SIMULAÇÕES) ]");
-            if (_ultimosAlarmes.Count == 0)
-            {
-                Console.ForegroundColor = ConsoleColor.DarkGray;
-                Console.WriteLine("   -> Sistema normal.");
-                Console.ResetColor();
-            }
-            else 
-            {
-                foreach (string a in _ultimosAlarmes) 
-                {
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine($"   !!! {a}");
-                    Console.ResetColor();
-                }
-            }
+            string sep = new string('=', 110);
 
-            Console.WriteLine("\n[ ÚLTIMAS 10 LEITURAS AMBIENTAIS ENVIADAS ]");
-            foreach (string l in _ultimosLogs) 
+            Console.ForegroundColor = ConsoleColor.Cyan;
+            Console.WriteLine(sep);
+            Console.WriteLine("                                             [ ONE HEALTH - SENSOR ]                                             ");
+            Console.WriteLine(sep);
+            Console.ResetColor();
+
+            Console.Write($"  ID: {_idSensor} | ZONA: {_zona} | VIDEO: ");
+            if (_videoStream) { Console.ForegroundColor = ConsoleColor.Magenta; Console.Write("SIM"); }
+            else              { Console.ForegroundColor = ConsoleColor.DarkGray; Console.Write("NAO"); }
+            Console.ResetColor();
+            Console.Write(" | REDE: ");
+            if (_isOnline) { Console.ForegroundColor = ConsoleColor.Green; Console.WriteLine($"ONLINE ({_gatewayConectado})".PadRight(40)); }
+            else           { Console.ForegroundColor = ConsoleColor.Red;   Console.WriteLine($"OFFLINE / {_gatewayConectado}".PadRight(40)); }
+            Console.ResetColor();
+
+            Console.ForegroundColor = ConsoleColor.Cyan;
+            Console.WriteLine(sep);
+            Console.ResetColor();
+
+            Console.WriteLine("\n[ ULTIMAS 10 LEITURAS AMBIENTAIS ENVIADAS ]");
+            foreach (string l in _ultimosLogs)
             {
                 Console.ForegroundColor = ConsoleColor.White;
                 Console.WriteLine($"   > {l}");
                 Console.ResetColor();
             }
-            
+
             Console.ForegroundColor = ConsoleColor.Cyan;
-            Console.WriteLine("\n" + linhaSeparadora);
+            Console.WriteLine("\n" + sep);
             Console.ResetColor();
-            Console.WriteLine(" Pressione Ctrl+C para desligar e enviar comando BYE.");
+            Console.WriteLine(" Pressione Ctrl+C para desligar.".PadRight(110));
         }
 
         static void TratarEncerramento(object sender, ConsoleCancelEventArgs args)
         {
             args.Cancel = true;
             _encerrando = true;
-
-            foreach(var t in _timersDados) t.Stop();
+            foreach (var t in _timersDados) t.Stop();
             _timerHeartbeat?.Stop();
-            
-            if (_isOnline && _writer != null)
-            {
-                EnviarMensagem($"BYE|{_idSensor}");
-            }
+            if (_isOnline && _writer != null) EnviarMensagem($"BYE|{_idSensor}");
             AlterarEstado(false, "DESLIGADO");
-            Thread.Sleep(500); 
-            Environment.Exit(0); 
+            Thread.Sleep(500);
+            Environment.Exit(0);
         }
     }
 }

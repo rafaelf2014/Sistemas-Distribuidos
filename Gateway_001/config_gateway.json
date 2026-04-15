@@ -1,0 +1,9 @@
+{
+  "gatewayId": "Gateway_001",
+  "agregacoes": [
+    { "tipo": "TEMP",  "unidade": "ºC",  "intervaloMs": 30000 },
+    { "tipo": "HUM",   "unidade": "%",   "intervaloMs": 60000 },
+    { "tipo": "CO2",   "unidade": "ppm", "intervaloMs": 90000 },
+    { "tipo": "RUIDO", "unidade": "dB",  "intervaloMs": 40000 }
+  ]
+}

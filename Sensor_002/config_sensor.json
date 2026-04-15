@@ -1,0 +1,8 @@
+{
+  "sensorId": "S002",
+  "zona": "CHAVES",
+  "videoStream": true,
+  "leituras": [
+    { "tipo": "CO2", "intervaloMs": 10000 }
+  ]
+}
