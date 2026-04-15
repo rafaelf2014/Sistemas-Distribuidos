@@ -1,0 +1,10 @@
+{
+  "sensorId": "S019",
+  "zona": "VILAREAL_CENTRO",
+  "videoStream": false,
+  "leituras": [
+    { "tipo": "TEMP", "intervaloMs": 60000 },
+    { "tipo": "HUM",  "intervaloMs": 60000 },
+    { "tipo": "CO2",  "intervaloMs": 60000 }
+  ]
+}

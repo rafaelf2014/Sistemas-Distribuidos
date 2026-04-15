@@ -1,0 +1,9 @@
+{
+  "sensorId": "S016",
+  "zona": "VILAREAL_ESTE",
+  "videoStream": false,
+  "leituras": [
+    { "tipo": "CO2",   "intervaloMs": 60000 },
+    { "tipo": "RUIDO", "intervaloMs": 60000 }
+  ]
+}

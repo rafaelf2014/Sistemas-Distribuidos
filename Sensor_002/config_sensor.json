@@ -1,6 +1,6 @@
 {
   "sensorId": "S002",
-  "zona": "CHAVES",
+  "zona": "CHAVES_NORTE",
   "videoStream": true,
   "leituras": [
     { "tipo": "CO2", "intervaloMs": 10000 }

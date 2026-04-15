@@ -1,5 +1,6 @@
 {
   "gatewayId": "Gateway_001",
+  "serverIp": "127.0.0.1",
   "agregacoes": [
     { "tipo": "TEMP",  "unidade": "ºC",  "intervaloMs": 30000 },
     { "tipo": "HUM",   "unidade": "%",   "intervaloMs": 60000 },

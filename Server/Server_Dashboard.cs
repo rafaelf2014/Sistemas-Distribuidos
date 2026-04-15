@@ -82,16 +82,18 @@ partial class ServerCentral
 
         // Fixed 5-slot streaming sensors section
         Console.WriteLine(new string(' ', 110));
-        Console.WriteLine("[ SENSORES COM CAPACIDADE DE STREAMING ]".PadRight(110));
+        Console.WriteLine("[ SENSORES COM CAPACIDADE DE STREAMING — tecla [1-5] para iniciar/parar ]".PadRight(110));
         var streamList = _sensoresStream.ToList();
         for (int i = 0; i < 5; i++)
         {
             if (i < streamList.Count)
             {
-                Console.ForegroundColor = ConsoleColor.Magenta;
-                Console.Write("   [VIDEO] ");
+                string sId  = streamList[i].Key;
+                bool ativo  = _streamingAtivo && _streamingSensorId == sId;
+                Console.ForegroundColor = ativo ? ConsoleColor.Green : ConsoleColor.Magenta;
+                Console.Write(ativo ? $"   [{i + 1}] [A TRANSMITIR] " : $"   [{i + 1}] [VIDEO]        ");
                 Console.ForegroundColor = ConsoleColor.White;
-                Console.WriteLine($"{streamList[i].Key} | GW: {streamList[i].Value.GatewayId} | ZONA: {streamList[i].Value.Zona} | TIPOS: {streamList[i].Value.Tipos}".PadRight(99));
+                Console.WriteLine($"{sId} | GW: {streamList[i].Value.GatewayId} | ZONA: {streamList[i].Value.Zona} | TIPOS: {streamList[i].Value.Tipos}".PadRight(88));
                 Console.ResetColor();
             }
             else Console.WriteLine(new string(' ', 110));

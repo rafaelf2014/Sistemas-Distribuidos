@@ -24,6 +24,7 @@ class AgregacaoConfig
 class ConfigGateway
 {
     [JsonPropertyName("gatewayId")]  public string                GatewayId  { get; set; } = "Gateway_001";
+    [JsonPropertyName("serverIp")]   public string                ServerIp   { get; set; } = "127.0.0.1";
     [JsonPropertyName("agregacoes")] public List<AgregacaoConfig> Agregacoes { get; set; } = new();
 }
 
@@ -42,6 +43,7 @@ partial class MyTcpListener
     #region CAMPOS
 
     static string _gatewayId = "Gateway_001";
+    static string _serverIp  = "127.0.0.1";
 
     static readonly string pastaProjeto    = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, @"..\..\..\"));
     static readonly string caminhoSensores = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, @"..\..\..\sensores.json"));
@@ -79,6 +81,9 @@ partial class MyTcpListener
         _timerWatchdog.Elapsed += VerificarSensoresPerdidos;
         _timerWatchdog.AutoReset = true;
         _timerWatchdog.Start();
+
+        // Listener de comandos do servidor (REQUEST_STREAM / STOP_STREAM)
+        new Thread(IniciarListenerComandos) { IsBackground = true, Name = "CMD-Listener" }.Start();
 
         try
         {
@@ -180,6 +185,7 @@ partial class MyTcpListener
 
         var cfg = JsonSerializer.Deserialize<ConfigGateway>(File.ReadAllText(caminho), _jsonRead)!;
         _gatewayId = cfg.GatewayId;
+        _serverIp  = cfg.ServerIp;
 
         foreach (var ag in cfg.Agregacoes)
         {
@@ -462,7 +468,9 @@ partial class MyTcpListener
                         break;
                 }
 
-                writer.WriteLine(resposta);
+                // Piggyback any pending stream command onto the ACK
+                string cmdSuffix = parts.Length > 1 ? ComandoPendenteParaSensor(parts[1]) : "";
+                writer.WriteLine(resposta + cmdSuffix);
                 if (command == "BYE") break;
             }
         }
@@ -478,7 +486,7 @@ partial class MyTcpListener
     {
         try
         {
-            using TcpClient  sc = new TcpClient("127.0.0.1", 14000);
+            using TcpClient  sc = new TcpClient(_serverIp, 14000);
             using var         s = sc.GetStream();
             using StreamReader r = new StreamReader(s);
             using StreamWriter w = new StreamWriter(s) { AutoFlush = true };
@@ -505,7 +513,7 @@ partial class MyTcpListener
     {
         try
         {
-            using TcpClient  sc = new TcpClient("127.0.0.1", 14000);
+            using TcpClient  sc = new TcpClient(_serverIp, 14000);
             using var         s = sc.GetStream();
             using StreamReader r = new StreamReader(s);
             using StreamWriter w = new StreamWriter(s) { AutoFlush = true };

@@ -1,6 +1,6 @@
 {
   "sensorId": "S003",
-  "zona": "CHAVES",
+  "zona": "CHAVES_SUL",
   "videoStream": false,
   "leituras": [
     { "tipo": "RUIDO", "intervaloMs": 10000 }

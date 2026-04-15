@@ -1,0 +1,8 @@
+{
+  "sensorId": "S018",
+  "zona": "VILAREAL_OESTE",
+  "videoStream": false,
+  "leituras": [
+    { "tipo": "RUIDO", "intervaloMs": 60000 }
+  ]
+}

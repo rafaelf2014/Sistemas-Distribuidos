@@ -1,0 +1,9 @@
+{
+  "sensorId": "S007",
+  "zona": "CHAVES_OESTE",
+  "videoStream": false,
+  "leituras": [
+    { "tipo": "HUM", "intervaloMs": 60000 },
+    { "tipo": "CO2", "intervaloMs": 60000 }
+  ]
+}

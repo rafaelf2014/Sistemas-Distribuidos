@@ -1,11 +1,13 @@
 using System;
 using System.IO;
+using System.Net;
 using System.Net.Sockets;
 using System.Timers;
 using System.Threading;
 using System.Collections.Generic;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using OpenCvSharp;
 using Timer = System.Timers.Timer;
 
 namespace sensor
@@ -61,6 +63,9 @@ namespace sensor
         private static bool   _isOnline        = false;
         private static bool   _encerrando      = false;
         private static string _gatewayConectado = "";
+
+        private static volatile bool _streamingAtivo = false;
+        private static Thread        _threadStream   = null;
 
         #endregion
 
@@ -188,10 +193,85 @@ namespace sensor
                     if (_writer == null) return;
                     _writer.WriteLine(mensagem);
                     string resposta = _reader.ReadLine();
-                    if (resposta == null) AlterarEstado(false, "FALHA REDE");
+                    if (resposta == null) { AlterarEstado(false, "FALHA REDE"); return; }
+                    ProcessarComando(resposta);
                 }
                 catch { AlterarEstado(false, "FALHA REDE"); }
             }
+        }
+
+        #endregion
+
+        #region STREAMING
+
+        // Analisa o ACK do gateway e activa/desactiva o stream se vier um comando piggyback
+        static void ProcessarComando(string resposta)
+        {
+            string[] partes = resposta.Split('|');
+            for (int i = 0; i < partes.Length; i++)
+            {
+                if (partes[i] == "STREAM_TO" && i + 1 < partes.Length)
+                {
+                    string[] ipPort = partes[i + 1].Split(':');
+                    if (ipPort.Length == 2 && int.TryParse(ipPort[1], out int port))
+                        IniciarStream(ipPort[0], port);
+                }
+                else if (partes[i] == "STOP_STREAM")
+                {
+                    PararStream();
+                }
+            }
+        }
+
+        static void IniciarStream(string serverIp, int udpPort)
+        {
+            if (_streamingAtivo) return;
+            _streamingAtivo = true;
+            _threadStream   = new Thread(() => StreamarVideo(serverIp, udpPort)) { IsBackground = true, Name = "VideoStream" };
+            _threadStream.Start();
+            RegistarLog("Stream de vídeo iniciado.");
+        }
+
+        static void PararStream()
+        {
+            _streamingAtivo = false;
+            RegistarLog("Stream de vídeo terminado.");
+        }
+
+        static void StreamarVideo(string serverIp, int udpPort)
+        {
+            try
+            {
+                using var capture = new VideoCapture(0); // câmara índice 0
+                if (!capture.IsOpened())
+                {
+                    RegistarLog("Câmara não disponível.");
+                    _streamingAtivo = false;
+                    return;
+                }
+                capture.Set(VideoCaptureProperties.FrameWidth,  320);
+                capture.Set(VideoCaptureProperties.FrameHeight, 240);
+
+                using var udpClient = new UdpClient();
+                var endpoint = new IPEndPoint(IPAddress.Parse(serverIp), udpPort);
+
+                using var frame = new Mat();
+                while (_streamingAtivo && _isOnline)
+                {
+                    if (!capture.Read(frame) || frame.Empty()) continue;
+
+                    Cv2.ImEncode(".jpg", frame, out byte[] jpeg,
+                        new ImageEncodingParam(ImwriteFlags.JpegQuality, 65));
+
+                    // UDP max payload ~65507 bytes; 320x240 JPEG@Q65 fica bem abaixo disso
+                    if (jpeg.Length <= 60000)
+                        udpClient.Send(jpeg, jpeg.Length, endpoint);
+
+                    Thread.Sleep(33); // ~30 fps
+                }
+            }
+            catch (Exception ex) { RegistarLog($"Erro stream: {ex.Message}"); }
+            finally { _streamingAtivo = false; }
         }
 
         #endregion

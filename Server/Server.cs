@@ -43,12 +43,12 @@ partial class ServerCentral
             Name = "DB-Writer"
         };
         _threadConsumidor.Start();
+        IniciarTecladoThread();
 
         try
         {
             Int32 port = 14000;
-            IPAddress localAddr = IPAddress.Parse("127.0.0.1");
-            _server = new TcpListener(localAddr, port);
+            _server = new TcpListener(IPAddress.Any, port);
             _server.Start();
 
             RegistarLog($"Servidor à escuta na porta {port}...");
@@ -80,7 +80,8 @@ partial class ServerCentral
 
     static void HandleGateway(TcpClient gatewayClient)
     {
-        string endpoint = gatewayClient.Client.RemoteEndPoint.ToString();
+        string endpoint  = gatewayClient.Client.RemoteEndPoint.ToString();
+        string gatewayIp = ((IPEndPoint)gatewayClient.Client.RemoteEndPoint).Address.ToString();
         try
         {
             using NetworkStream stream = gatewayClient.GetStream();
@@ -92,6 +93,10 @@ partial class ServerCentral
             {
                 string[] partes = linha.Split('|');
                 for (int i = 0; i < partes.Length; i++) { partes[i] = partes[i].Trim(); }
+
+                // Track which IP belongs to each gateway (needed to open reverse stream connection)
+                if (partes.Length >= 2 && !string.IsNullOrEmpty(partes[1]))
+                    _gatewayIps[partes[1]] = gatewayIp;
 
                 if (partes.Length == 7 && (partes[0] == "DATA_FORWARD" || partes[0] == "ALARM_FORWARD"))
                 {
