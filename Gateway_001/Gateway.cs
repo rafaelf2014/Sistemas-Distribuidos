@@ -12,7 +12,7 @@ using System.Text.Json.Serialization;
 using Timer = System.Timers.Timer;
 
 // ==========================================
-// DTOs for JSON configs
+// DTOs — JSON configs
 // ==========================================
 class AgregacaoConfig
 {
@@ -23,8 +23,8 @@ class AgregacaoConfig
 
 class ConfigGateway
 {
-    [JsonPropertyName("gatewayId")]   public string              GatewayId  { get; set; } = "Gateway_001";
-    [JsonPropertyName("agregacoes")]  public List<AgregacaoConfig> Agregacoes { get; set; } = new();
+    [JsonPropertyName("gatewayId")]  public string                GatewayId  { get; set; } = "Gateway_001";
+    [JsonPropertyName("agregacoes")] public List<AgregacaoConfig> Agregacoes { get; set; } = new();
 }
 
 class SensorEntry
@@ -37,40 +37,36 @@ class SensorEntry
     [JsonPropertyName("lastSync")]    public string LastSync    { get; set; }
 }
 
-class MyTcpListener
+partial class MyTcpListener
 {
+    #region CAMPOS
+
     static string _gatewayId = "Gateway_001";
 
-    static readonly string pastaProjeto  = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, @"..\..\..\"));
+    static readonly string pastaProjeto    = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, @"..\..\..\"));
     static readonly string caminhoSensores = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, @"..\..\..\sensores.json"));
     static readonly string caminhoAlarmes  = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, @"..\..\..\config_alarmes.json"));
 
-    static readonly object fileLock       = new object();
+    static readonly object fileLock        = new object();
     static readonly object _bufferFileLock = new object();
-    static readonly object _alarmesLock   = new object();
+    static readonly object _alarmesLock    = new object();
 
-    // Cached JSON options
     static readonly JsonSerializerOptions _jsonRead  = new() { PropertyNameCaseInsensitive = true };
     static readonly JsonSerializerOptions _jsonWrite = new() { WriteIndented = true };
 
-    // In-memory sensor registry: (Status, Zona, Tipos, VideoStream, LastSync)
-    // Eliminates file reads on every DATA_SEND — validated under fileLock.
+    // In-memory sensor registry: eliminates file reads on every DATA_SEND
     static readonly Dictionary<string, (string Status, string Zona, string Tipos, bool VideoStream, DateTime LastSync)>
         _sensoresCache = new();
 
     static readonly List<Timer> _timersAgregacao = new();
-    static Timer _timerWatchdog;
-    static TcpListener server = null;
+    static          Timer       _timerWatchdog;
+    static          TcpListener server = null;
 
-    static readonly Dictionary<string, string> _unidadesMedida  = new();
-    static          Dictionary<string, Dictionary<string, double>> _limitesAlarme = new();
-    static readonly Dictionary<string, long>   _janelasTemporais = new();
+    static readonly Dictionary<string, string>                     _unidadesMedida   = new();
+    static          Dictionary<string, Dictionary<string, double>> _limitesAlarme    = new();
+    static readonly Dictionary<string, long>                       _janelasTemporais = new();
 
-    private static readonly object       _consoleLock   = new object();
-    private static readonly List<string> _alarmesEsquerda = new();
-    private static readonly List<string> _logsEsquerda    = new();
-    private static readonly List<string> _logsDireita      = new();
-    private static bool _isOnline = true;
+    #endregion
 
     public static void Main()
     {
@@ -100,9 +96,8 @@ class MyTcpListener
         finally { server?.Stop(); }
     }
 
-    // ==========================================
-    // ALARMES JSON
-    // ==========================================
+    #region ALARMES
+
     static void InicializarFicheiroAlarmesJson()
     {
         lock (_alarmesLock)
@@ -159,9 +154,10 @@ class MyTcpListener
         }
     }
 
-    // ==========================================
-    // GATEWAY CONFIG (config_gateway.json)
-    // ==========================================
+    #endregion
+
+    #region CONFIG DO GATEWAY
+
     static void InicializarTimersGateway()
     {
         string caminho = Path.Combine(pastaProjeto, "config_gateway.json");
@@ -188,7 +184,7 @@ class MyTcpListener
         foreach (var ag in cfg.Agregacoes)
         {
             string tipo = ag.Tipo.ToUpper();
-            _unidadesMedida[tipo]  = ag.Unidade;
+            _unidadesMedida[tipo]   = ag.Unidade;
             _janelasTemporais[tipo] = DateTime.Now.Ticks;
 
             Timer t = new Timer(ag.IntervaloMs);
@@ -199,9 +195,10 @@ class MyTcpListener
         }
     }
 
-    // ==========================================
-    // SENSOR REGISTRY (sensores.json)
-    // ==========================================
+    #endregion
+
+    #region REGISTO DE SENSORES
+
     static void InicializarSensoresJson()
     {
         lock (fileLock)
@@ -307,9 +304,10 @@ class MyTcpListener
         }
     }
 
-    // ==========================================
-    // AGREGAÇÃO
-    // ==========================================
+    #endregion
+
+    #region AGREGAÇÃO
+
     static void ProcessarAgregadosFiltrados(string tipoDadoFiltro)
     {
         long tickNovo;
@@ -328,9 +326,9 @@ class MyTcpListener
                 string[] partes = Path.GetFileNameWithoutExtension(ficheiro).Split('_');
                 if (partes.Length != 4) continue;
 
-                string ticksStr  = partes[1];
-                string sensorId  = partes[2];
-                string tipoDado  = partes[3];
+                string ticksStr = partes[1];
+                string sensorId = partes[2];
+                string tipoDado = partes[3];
 
                 string[] linhas = File.ReadAllLines(ficheiro);
                 if (linhas.Length == 0) { File.Delete(ficheiro); continue; }
@@ -360,9 +358,10 @@ class MyTcpListener
         }
     }
 
-    // ==========================================
-    // HANDLER DE SENSORES
-    // ==========================================
+    #endregion
+
+    #region HANDLER DE SENSORES
+
     static void HandleSensor(TcpClient client)
     {
         try
@@ -383,14 +382,11 @@ class MyTcpListener
                     case "HELLO":
                         if (parts.Length >= 4)
                         {
-                            // parts[4] = "true"/"false" — video streaming capability
                             bool videoCapable = parts.Length >= 5 &&
                                                 bool.TryParse(parts[4], out bool vc) && vc;
 
                             RegistarOuAtualizarSensor(parts[1], parts[2], parts[3], videoCapable);
                             AutoPopularAlarmes(parts[2], parts[3]);
-
-                            // Notify server about this sensor (no locks held here)
                             EnviarRegistoSensorParaServidor(parts[1], parts[2], parts[3], videoCapable);
                         }
                         resposta = "ACK_HELLO|OK";
@@ -407,7 +403,6 @@ class MyTcpListener
                                 string timestamp = parts[4];
                                 string zona      = ObterZonaDoSensor(sensorId).ToUpper();
 
-                                // Read the tick under lock; do file I/O outside to minimise lock hold time
                                 long tickAtivo;
                                 lock (_bufferFileLock)
                                 {
@@ -434,7 +429,6 @@ class MyTcpListener
                                     RegistarLogEsquerda(
                                         $"EDGE ANALYTICS: Anomalia em {sensorId}! ({tipoDado} = {valor}{un} @ {zona})", true);
 
-                                    // Log whether this sensor can provide a video feed
                                     bool temVideo;
                                     lock (fileLock)
                                     {
@@ -479,9 +473,10 @@ class MyTcpListener
         finally { client.Close(); }
     }
 
-    // ==========================================
-    // COMUNICAÇÃO COM SERVIDOR
-    // ==========================================
+    #endregion
+
+    #region COMUNICAÇÃO COM SERVIDOR
+
     static bool EnviarParaServidor(string tipo, string sensorId, string tipoDado, string valor, string timestamp)
     {
         try
@@ -522,107 +517,12 @@ class MyTcpListener
             w.WriteLine($"SENSOR_REG|{_gatewayId}|{sensorId}|{zona}|{tipos}|{(videoCapable ? "true" : "false")}");
             r.ReadLine(); // consume ACK
         }
-        catch { /* Server may not be running yet; no retry needed — sensor will re-HELLO on reconnect */ }
+        catch { /* Server may not be running yet; sensor will re-HELLO on reconnect */ }
     }
 
-    // ==========================================
-    // TUI
-    // ==========================================
-    static void RegistarLogEsquerda(string mensagem, bool isAlarm = false)
-    {
-        lock (_consoleLock)
-        {
-            string linha = $"[{DateTime.Now:HH:mm:ss}] {mensagem}";
-            if (isAlarm)
-            {
-                _alarmesEsquerda.Insert(0, linha);
-                if (_alarmesEsquerda.Count > 10) _alarmesEsquerda.RemoveAt(10);
-            }
-            else
-            {
-                _logsEsquerda.Insert(0, linha);
-                if (_logsEsquerda.Count > 10) _logsEsquerda.RemoveAt(10);
-            }
-            DesenharDashboard();
-        }
-    }
+    #endregion
 
-    static void RegistarLogDireita(string msgEnvio, string msgResposta)
-    {
-        lock (_consoleLock)
-        {
-            string t = DateTime.Now.ToString("HH:mm:ss");
-            _logsDireita.Insert(0, $"   └─> {msgResposta}");
-            _logsDireita.Insert(0, $"[{t}] {msgEnvio}");
-            while (_logsDireita.Count > 20) _logsDireita.RemoveAt(_logsDireita.Count - 1);
-            DesenharDashboard();
-        }
-    }
-
-    static void DesenharDashboard()
-    {
-        try { Console.SetCursorPosition(0, 0); } catch { Console.Clear(); }
-        Console.CursorVisible = false;
-
-        string sep = new string('=', 118);
-
-        Console.ForegroundColor = ConsoleColor.Cyan;
-        Console.WriteLine(sep);
-        Console.WriteLine("                                            [ ONE HEALTH - GATEWAY EDGE ]                                           ");
-        Console.WriteLine(sep);
-        Console.ResetColor();
-
-        Console.Write("  ESTADO: ");
-        if (_isOnline) { Console.ForegroundColor = ConsoleColor.Green; Console.Write("ONLINE "); }
-        else           { Console.ForegroundColor = ConsoleColor.Red;   Console.Write("OFFLINE"); }
-        Console.ResetColor();
-        Console.WriteLine($"   |   NODE ID: {_gatewayId}".PadRight(90));
-        Console.WriteLine(sep);
-
-        var leftCol  = new List<string>();
-        var rightCol = new List<string>();
-
-        leftCol.Add("[ ALARMES & EVENTOS CRITICOS ]");
-        if (_alarmesEsquerda.Count == 0) leftCol.Add("   Sem ocorrencias.");
-        else foreach (var a in _alarmesEsquerda) leftCol.Add("!!! " + a);
-        while (leftCol.Count < 12) leftCol.Add("");
-
-        leftCol.Add("[ TRAFEGO RECEBIDO (SENSORES) ]");
-        foreach (var l in _logsEsquerda) leftCol.Add("> " + l);
-        while (leftCol.Count < 24) leftCol.Add("");
-
-        rightCol.Add("[ OUTPUT PARA O SERVIDOR CENTRAL ]");
-        foreach (var r in _logsDireita) rightCol.Add(r);
-        while (rightCol.Count < 24) rightCol.Add("");
-
-        for (int i = 0; i < 24; i++)
-        {
-            string left  = leftCol[i].Length  > 56 ? leftCol[i].Substring(0, 53)  + "..." : leftCol[i];
-            string right = rightCol[i].Length > 58 ? rightCol[i].Substring(0, 55) + "..." : rightCol[i];
-
-            if      (left.Contains("!!!") || left.Contains("Falha") || left.Contains("Watchdog")) Console.ForegroundColor = ConsoleColor.Red;
-            else if (left.Contains("[ ALARMES") || left.Contains("[ TRAFEGO"))                   Console.ForegroundColor = ConsoleColor.Cyan;
-            else if (left.Contains("[VIDEO]"))                                                    Console.ForegroundColor = ConsoleColor.Magenta;
-            else                                                                                  Console.ForegroundColor = ConsoleColor.Gray;
-            Console.Write(left.PadRight(58));
-
-            Console.ForegroundColor = ConsoleColor.DarkGray;
-            Console.Write(" | ");
-
-            if      (right.Contains("[ALARM]"))                         Console.ForegroundColor = ConsoleColor.Yellow;
-            else if (right.Contains("[DATA]"))                          Console.ForegroundColor = ConsoleColor.White;
-            else if (right.Contains("STATUS OK"))                       Console.ForegroundColor = ConsoleColor.Green;
-            else if (right.Contains("ERRO") || right.Contains("Falha")) Console.ForegroundColor = ConsoleColor.Red;
-            else if (right.Contains("[ OUTPUT"))                        Console.ForegroundColor = ConsoleColor.Cyan;
-            else                                                         Console.ForegroundColor = ConsoleColor.Gray;
-            Console.WriteLine(right.PadRight(57));
-
-            Console.ResetColor();
-        }
-
-        Console.WriteLine(sep);
-        Console.WriteLine(" Pressione Ctrl+C para desligar o Gateway de forma segura.".PadRight(118));
-    }
+    #region ENCERRAMENTO
 
     static void TratarEncerramento(object sender, ConsoleCancelEventArgs args)
     {
@@ -638,4 +538,6 @@ class MyTcpListener
         Thread.Sleep(500);
         Environment.Exit(0);
     }
+
+    #endregion
 }

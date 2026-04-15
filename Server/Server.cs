@@ -8,11 +8,10 @@ using System.Text;
 using System.Threading;
 using Microsoft.Data.Sqlite;
 
-class ServerCentral
+partial class ServerCentral
 {
-    // ==========================================
-    // PRODUCER-CONSUMER: FILA DE ESCRITA NA DB
-    // ==========================================
+    #region CAMPOS
+
     private record struct DataRecord(
         string GatewayId, string SensorId, string Zona,
         string TipoDado, string Valor, string Timestamp, bool IsAlarm);
@@ -21,17 +20,16 @@ class ServerCentral
     private static readonly BlockingCollection<DataRecord> _filaEscrita = new(1000);
     private static Thread _threadConsumidor;
 
-    private static readonly string dbPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, @"..\..\..\ServerData.db"));
+    private static readonly string dbPath           = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, @"..\..\..\ServerData.db"));
     private static readonly string connectionString = $"Data Source={dbPath}";
     static TcpListener _server = null;
 
-    private static readonly object _consoleLock = new object();
-    private static List<string> _ultimosLogs = new List<string>();
-    private static List<string> _ultimosAlarmes = new List<string>();
-    private static bool _isOnline = true;
-
     // Sensors that advertised video-streaming capability (populated via SENSOR_REG)
     private static readonly ConcurrentDictionary<string, (string GatewayId, string Zona, string Tipos)> _sensoresStream = new();
+
+    #endregion
+
+    #region INICIALIZAÇÃO
 
     public static void Main()
     {
@@ -76,100 +74,9 @@ class ServerCentral
         }
     }
 
-    static void RegistarLog(string mensagem, bool isAlarm = false)
-    {
-        lock (_consoleLock)
-        {
-            string timestamp = DateTime.Now.ToString("HH:mm:ss");
-            string linha = $"[{timestamp}] {mensagem}";
+    #endregion
 
-            if (isAlarm)
-            {
-                _ultimosAlarmes.Insert(0, linha);
-                if (_ultimosAlarmes.Count > 10) _ultimosAlarmes.RemoveAt(10);
-            }
-            else
-            {
-                _ultimosLogs.Insert(0, linha);
-                if (_ultimosLogs.Count > 10) _ultimosLogs.RemoveAt(10);
-            }
-            DesenharDashboard();
-        }
-    }
-
-    static void DesenharDashboard()
-    {
-        Console.Clear();
-        string linhaSeparadora = new string('=', 110);
-
-        Console.ForegroundColor = ConsoleColor.Cyan;
-        Console.WriteLine(linhaSeparadora);
-        Console.WriteLine("                                          [ ONE HEALTH - SERVIDOR CENTRAL ]                                      ");
-        Console.WriteLine(linhaSeparadora);
-        Console.ResetColor();
-
-        Console.Write("  ESTADO: ");
-        if (_isOnline) { Console.ForegroundColor = ConsoleColor.Green; Console.Write("ONLINE"); }
-        else { Console.ForegroundColor = ConsoleColor.Red; Console.Write("OFFLINE"); }
-        Console.ResetColor();
-        Console.WriteLine($"   |   FILA PENDENTE DB: {_filaEscrita.Count} registos");
-
-        Console.ForegroundColor = ConsoleColor.Cyan;
-        Console.WriteLine(linhaSeparadora);
-        Console.ResetColor();
-
-        Console.WriteLine("\n[ ÚLTIMOS 10 ALARMES URGENTES (EDGE ANALYTICS) ]");
-        if (_ultimosAlarmes.Count == 0)
-        {
-            Console.ForegroundColor = ConsoleColor.DarkGray;
-            Console.WriteLine("   -> Sem anomalias registadas.");
-            Console.ResetColor();
-        }
-        else
-        {
-            foreach (string alarme in _ultimosAlarmes)
-            {
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.Write("   !!! ");
-                Console.ForegroundColor = ConsoleColor.Yellow;
-                Console.WriteLine(alarme);
-                Console.ResetColor();
-            }
-        }
-
-        Console.WriteLine("\n[ SENSORES COM CAPACIDADE DE STREAMING ]");
-        if (_sensoresStream.IsEmpty)
-        {
-            Console.ForegroundColor = ConsoleColor.DarkGray;
-            Console.WriteLine("   -> Nenhum sensor com capacidade de streaming registado.");
-            Console.ResetColor();
-        }
-        else
-        {
-            foreach (var kvp in _sensoresStream)
-            {
-                Console.ForegroundColor = ConsoleColor.Magenta;
-                Console.Write("   [VIDEO] ");
-                Console.ForegroundColor = ConsoleColor.White;
-                Console.WriteLine($"{kvp.Key} | GW: {kvp.Value.GatewayId} | ZONA: {kvp.Value.Zona} | TIPOS: {kvp.Value.Tipos}");
-                Console.ResetColor();
-            }
-        }
-
-        Console.WriteLine("\n[ ÚLTIMAS 10 ATIVIDADES (TRÁFEGO NORMAL) ]");
-        foreach (string log in _ultimosLogs)
-        {
-            if (log.Contains("Erro") || log.Contains("ERRO")) Console.ForegroundColor = ConsoleColor.Red;
-            else Console.ForegroundColor = ConsoleColor.White;
-            Console.WriteLine($"   > {log}");
-            Console.ResetColor();
-        }
-
-        Console.ForegroundColor = ConsoleColor.Cyan;
-        Console.WriteLine("\n" + linhaSeparadora);
-        Console.ResetColor();
-        Console.WriteLine(" Pressione Ctrl+C para encerrar o servidor de forma limpa.");
-    }
+    #region HANDLER DE GATEWAYS
 
     static void HandleGateway(TcpClient gatewayClient)
     {
@@ -177,8 +84,8 @@ class ServerCentral
         try
         {
             using NetworkStream stream = gatewayClient.GetStream();
-            using StreamReader reader = new StreamReader(stream, Encoding.UTF8);
-            using StreamWriter writer = new StreamWriter(stream, Encoding.UTF8) { AutoFlush = true };
+            using StreamReader reader  = new StreamReader(stream, Encoding.UTF8);
+            using StreamWriter writer  = new StreamWriter(stream, Encoding.UTF8) { AutoFlush = true };
 
             string linha;
             while ((linha = reader.ReadLine()) != null)
@@ -189,7 +96,7 @@ class ServerCentral
                 if (partes.Length == 7 && (partes[0] == "DATA_FORWARD" || partes[0] == "ALARM_FORWARD"))
                 {
                     bool isAlarm = partes[0] == "ALARM_FORWARD";
-                    var registo = new DataRecord(partes[1], partes[2], partes[3], partes[4], partes[5], partes[6], isAlarm);
+                    var registo  = new DataRecord(partes[1], partes[2], partes[3], partes[4], partes[5], partes[6], isAlarm);
 
                     // TryAdd with timeout: blocks up to 5s if queue is full, then tells gateway to retry
                     if (_filaEscrita.TryAdd(registo, TimeSpan.FromSeconds(5)))
@@ -197,7 +104,7 @@ class ServerCentral
                         // ACK sent immediately — gateway can delete its pending file now
                         writer.WriteLine("ACK_FORWARDDATA|STATUS OK");
                         if (isAlarm) RegistarLog($"[{partes[3]}] ANOMALIA! Sensor: {partes[2]} | {partes[4]} = {partes[5]}", true);
-                        else RegistarLog($"[{partes[3]}] {partes[2]} -> {partes[4]} = {partes[5]}");
+                        else         RegistarLog($"[{partes[3]}] {partes[2]} -> {partes[4]} = {partes[5]}");
                     }
                     else
                     {
@@ -223,6 +130,10 @@ class ServerCentral
         catch (Exception e) { RegistarLog($"ERRO REDE ({endpoint}): {e.Message}"); }
         finally { gatewayClient.Close(); }
     }
+
+    #endregion
+
+    #region BASE DE DADOS
 
     static void InicializarBaseDeDados()
     {
@@ -252,17 +163,21 @@ class ServerCentral
             var cmd = connection.CreateCommand();
             cmd.CommandText = @"INSERT INTO Dados (GatewayId, SensorId, Zona, TipoDado, Valor, Timestamp, IsAlarm)
                                 VALUES ($gatewayId, $sensorId, $zona, $tipoDado, $valor, $timestamp, $isAlarm)";
-            cmd.Parameters.AddWithValue("$gatewayId", gatewayId);
-            cmd.Parameters.AddWithValue("$sensorId", sensorId);
-            cmd.Parameters.AddWithValue("$zona", zona);
-            cmd.Parameters.AddWithValue("$tipoDado", tipoDado);
-            cmd.Parameters.AddWithValue("$valor", valor);
-            cmd.Parameters.AddWithValue("$timestamp", timestamp);
-            cmd.Parameters.AddWithValue("$isAlarm", isAlarm ? 1 : 0);
+            cmd.Parameters.AddWithValue("$gatewayId",  gatewayId);
+            cmd.Parameters.AddWithValue("$sensorId",   sensorId);
+            cmd.Parameters.AddWithValue("$zona",       zona);
+            cmd.Parameters.AddWithValue("$tipoDado",   tipoDado);
+            cmd.Parameters.AddWithValue("$valor",      valor);
+            cmd.Parameters.AddWithValue("$timestamp",  timestamp);
+            cmd.Parameters.AddWithValue("$isAlarm",    isAlarm ? 1 : 0);
             cmd.ExecuteNonQuery();
         }
         catch (Exception ex) { RegistarLog($"Erro INSERT DB: {ex.Message}"); }
     }
+
+    #endregion
+
+    #region ENCERRAMENTO
 
     static void TratarEncerramento(object sender, ConsoleCancelEventArgs args)
     {
@@ -278,4 +193,6 @@ class ServerCentral
 
         Environment.Exit(0);
     }
+
+    #endregion
 }

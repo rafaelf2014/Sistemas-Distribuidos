@@ -10,7 +10,8 @@ using Timer = System.Timers.Timer;
 
 namespace sensor
 {
-    // DTO for config_sensor.json
+    #region CONFIG (DTOs)
+
     class LeituraConfig
     {
         [JsonPropertyName("tipo")]        public string Tipo        { get; set; }
@@ -25,15 +26,18 @@ namespace sensor
         [JsonPropertyName("leituras")]    public List<LeituraConfig> Leituras    { get; set; } = new();
     }
 
-    // Runtime per-reading config
     class SensorConfig
     {
         public string TipoDado    { get; set; }
         public int    IntervaloMs { get; set; }
     }
 
+    #endregion
+
     class Program
     {
+        #region CAMPOS
+
         static StreamWriter _writer;
         static StreamReader _reader;
         static readonly object streamLock = new object();
@@ -44,20 +48,23 @@ namespace sensor
         static string _dataTypes   = "";
 
         static Timer _timerHeartbeat;
-        static readonly List<Timer> _timersDados = new();
-        static readonly int _intervaloHeartbeat   = 5000;
+        static readonly List<Timer> _timersDados       = new();
+        static readonly int         _intervaloHeartbeat = 5000;
 
         private static readonly object       _consoleLock = new object();
         private static readonly List<string> _ultimosLogs = new();
         private static readonly Random       _rng         = new();
 
-        // Cached JsonSerializerOptions instances — never create per-call
         private static readonly JsonSerializerOptions _jsonRead  = new() { PropertyNameCaseInsensitive = true };
         private static readonly JsonSerializerOptions _jsonWrite = new() { WriteIndented = true };
 
-        private static bool   _isOnline         = false;
-        private static bool   _encerrando       = false;
+        private static bool   _isOnline        = false;
+        private static bool   _encerrando      = false;
         private static string _gatewayConectado = "";
+
+        #endregion
+
+        #region INICIALIZAÇÃO
 
         static void Main(string[] args)
         {
@@ -142,6 +149,10 @@ namespace sensor
             }
         }
 
+        #endregion
+
+        #region DADOS & HEARTBEAT
+
         static void GerarEEnviarDado(SensorConfig cfg)
         {
             if (!_isOnline) return;
@@ -186,9 +197,13 @@ namespace sensor
             }
         }
 
+        #endregion
+
+        #region TUI
+
         static void AlterarEstado(bool status, string descricao)
         {
-            _isOnline         = status;
+            _isOnline        = status;
             _gatewayConectado = descricao;
             DesenharDashboard();
         }
@@ -205,7 +220,8 @@ namespace sensor
 
         static void DesenharDashboard()
         {
-            Console.Clear();
+            try { Console.SetCursorPosition(0, 0); } catch { Console.Clear(); }
+            Console.CursorVisible = false;
             string sep = new string('=', 110);
 
             Console.ForegroundColor = ConsoleColor.Cyan;
@@ -219,27 +235,38 @@ namespace sensor
             else              { Console.ForegroundColor = ConsoleColor.DarkGray; Console.Write("NAO"); }
             Console.ResetColor();
             Console.Write(" | REDE: ");
-            if (_isOnline) { Console.ForegroundColor = ConsoleColor.Green; Console.WriteLine($"ONLINE ({_gatewayConectado})".PadRight(40)); }
-            else           { Console.ForegroundColor = ConsoleColor.Red;   Console.WriteLine($"OFFLINE / {_gatewayConectado}".PadRight(40)); }
+            if (_isOnline) { Console.ForegroundColor = ConsoleColor.Green; Console.WriteLine($"ONLINE ({_gatewayConectado})".PadRight(62)); }
+            else           { Console.ForegroundColor = ConsoleColor.Red;   Console.WriteLine($"OFFLINE / {_gatewayConectado}".PadRight(62)); }
             Console.ResetColor();
 
             Console.ForegroundColor = ConsoleColor.Cyan;
             Console.WriteLine(sep);
             Console.ResetColor();
 
-            Console.WriteLine("\n[ ULTIMAS 10 LEITURAS AMBIENTAIS ENVIADAS ]");
-            foreach (string l in _ultimosLogs)
+            // Fixed 10-slot log section — always renders exactly 12 lines (blank + header + 10 entries)
+            Console.WriteLine(new string(' ', 110));
+            Console.WriteLine("[ ULTIMAS 10 LEITURAS AMBIENTAIS ENVIADAS ]".PadRight(110));
+            for (int i = 0; i < 10; i++)
             {
-                Console.ForegroundColor = ConsoleColor.White;
-                Console.WriteLine($"   > {l}");
-                Console.ResetColor();
+                if (i < _ultimosLogs.Count)
+                {
+                    Console.ForegroundColor = ConsoleColor.White;
+                    Console.WriteLine($"   > {_ultimosLogs[i]}".PadRight(110));
+                    Console.ResetColor();
+                }
+                else Console.WriteLine(new string(' ', 110));
             }
 
             Console.ForegroundColor = ConsoleColor.Cyan;
-            Console.WriteLine("\n" + sep);
+            Console.WriteLine(new string(' ', 110));
+            Console.WriteLine(sep);
             Console.ResetColor();
             Console.WriteLine(" Pressione Ctrl+C para desligar.".PadRight(110));
         }
+
+        #endregion
+
+        #region ENCERRAMENTO
 
         static void TratarEncerramento(object sender, ConsoleCancelEventArgs args)
         {
@@ -252,5 +279,7 @@ namespace sensor
             Thread.Sleep(500);
             Environment.Exit(0);
         }
+
+        #endregion
     }
 }
