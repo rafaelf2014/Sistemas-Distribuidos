@@ -164,10 +164,8 @@ namespace sensor
 
             double v = cfg.TipoDado switch
             {
-                "TEMP"  => _rng.NextDouble() * 50.0,
-                "HUM"   => _rng.NextDouble() * 100.0,
-                "CO2"   => _rng.NextDouble() * 550.0,
                 "RUIDO" => _rng.NextDouble() * 120.0,
+                "LUMIN" => _rng.NextDouble() * 2000.0,
                 _       => _rng.NextDouble() * 100.0
             };
 

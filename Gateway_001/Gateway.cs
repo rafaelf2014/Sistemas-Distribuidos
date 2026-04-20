@@ -77,7 +77,7 @@ partial class MyTcpListener
         InicializarTimersGateway();
         InicializarFicheiroAlarmesJson();
 
-        _timerWatchdog = new Timer(10000);
+        _timerWatchdog = new Timer(30000);
         _timerWatchdog.Elapsed += VerificarSensoresPerdidos;
         _timerWatchdog.AutoReset = true;
         _timerWatchdog.Start();
@@ -298,9 +298,9 @@ partial class MyTcpListener
                 var s = _sensoresCache[id];
                 if (s.Status == "ativo" && (DateTime.Now - s.LastSync).TotalSeconds > 30)
                 {
-                    _sensoresCache[id] = ("perdido", s.Zona, s.Tipos, s.VideoStream, s.LastSync);
+                    _sensoresCache[id] = ("manutencao", s.Zona, s.Tipos, s.VideoStream, s.LastSync);
                     alterado = true;
-                    RegistarLogEsquerda($"Watchdog: Sensor {id} perdido (Timeout).", true);
+                    RegistarLogEsquerda($"Watchdog: Sensor {id} precisa de manutencao (Timeout).", true);
                 }
             }
             if (alterado) PersistirCacheParaJson();

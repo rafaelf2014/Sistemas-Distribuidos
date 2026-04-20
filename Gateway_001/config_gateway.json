@@ -3,8 +3,10 @@
   "serverIp": "127.0.0.1",
   "agregacoes": [
     { "tipo": "TEMP",  "unidade": "ºC",  "intervaloMs": 30000 },
-    { "tipo": "HUM",   "unidade": "%",   "intervaloMs": 60000 },
-    { "tipo": "CO2",   "unidade": "ppm", "intervaloMs": 90000 },
-    { "tipo": "RUIDO", "unidade": "dB",  "intervaloMs": 40000 }
+    { "tipo": "HUM",   "unidade": "%",   "intervaloMs": 40000 },
+    { "tipo": "CO2",   "unidade": "ppm", "intervaloMs": 40000 },
+    { "tipo": "RUIDO", "unidade": "dB",  "intervaloMs": 30000 },
+    { "tipo": "LUMIN", "unidade": "lux", "intervaloMs": 60000 },
+    { "tipo": "PART",   "unidade": "μg/m³", "intervaloMs": 60000 }
   ]
 }

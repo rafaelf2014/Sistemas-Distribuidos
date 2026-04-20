@@ -3,7 +3,6 @@
   "zona": "CHAVES_SUL",
   "videoStream": false,
   "leituras": [
-    { "tipo": "TEMP", "intervaloMs": 60000 },
-    { "tipo": "HUM",  "intervaloMs": 60000 }
+    { "tipo": "PART", "intervaloMs": 15000 }
   ]
 }

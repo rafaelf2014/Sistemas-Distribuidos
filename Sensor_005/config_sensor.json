@@ -3,7 +3,7 @@
   "zona": "CHAVES_ESTE",
   "videoStream": false,
   "leituras": [
-    { "tipo": "CO2",   "intervaloMs": 60000 },
-    { "tipo": "RUIDO", "intervaloMs": 60000 }
+    { "tipo": "CO2",   "intervaloMs": 15000 },
+    { "tipo": "RUIDO", "intervaloMs": 15000 }
   ]
 }

@@ -3,7 +3,6 @@
   "zona": "VILAREAL_SUL",
   "videoStream": false,
   "leituras": [
-    { "tipo": "HUM",   "intervaloMs": 60000 },
-    { "tipo": "RUIDO", "intervaloMs": 60000 }
+    { "tipo": "PART", "intervaloMs": 15000 }
   ]
 }

@@ -3,6 +3,6 @@
   "zona": "CHAVES_ESTE",
   "videoStream": false,
   "leituras": [
-    { "tipo": "TEMP", "intervaloMs": 60000 }
+    { "tipo": "TEMP", "intervaloMs": 10000 }
   ]
 }

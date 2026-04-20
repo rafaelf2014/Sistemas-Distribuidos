@@ -158,6 +158,7 @@ namespace sensor
                 "HUM"   => _rng.NextDouble() * 100.0,
                 "CO2"   => _rng.NextDouble() * 550.0,
                 "RUIDO" => _rng.NextDouble() * 120.0,
+                "LUMIN" => _rng.NextDouble() * 1000.0,
                 _       => _rng.NextDouble() * 100.0
             };
 

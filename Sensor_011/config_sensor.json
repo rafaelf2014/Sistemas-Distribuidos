@@ -1,9 +1,9 @@
 {
   "sensorId": "S011",
   "zona": "VILAREAL_NORTE",
-  "videoStream": false,
+  "videoStream": true,
   "leituras": [
-    { "tipo": "TEMP", "intervaloMs": 60000 },
-    { "tipo": "HUM",  "intervaloMs": 60000 }
+    { "tipo": "TEMP", "intervaloMs": 5000 },
+    { "tipo": "HUM",  "intervaloMs": 5000 }
   ]
 }

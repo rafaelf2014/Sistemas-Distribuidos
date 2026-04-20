@@ -5,6 +5,8 @@
     { "tipo": "TEMP",  "unidade": "ºC",  "intervaloMs": 300000 },
     { "tipo": "HUM",   "unidade": "%",   "intervaloMs": 300000 },
     { "tipo": "CO2",   "unidade": "ppm", "intervaloMs": 300000 },
-    { "tipo": "RUIDO", "unidade": "dB",  "intervaloMs": 300000 }
+    { "tipo": "RUIDO", "unidade": "dB",  "intervaloMs": 300000 },
+    { "tipo": "LUMIN", "unidade": "lux", "intervaloMs": 60000 },
+    { "tipo": "PART",   "unidade": "μg/m³", "intervaloMs": 60000 }
   ]
 }

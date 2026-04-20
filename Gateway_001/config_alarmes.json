@@ -1,5 +1,28 @@
 {
-  "CHAVES": {
+  "CHAVES_OESTE": {
+    "LUMIN": -1,
+    "PART": -1,
+    "HUM": -1,
+    "CO2": -1,
+    "TEMP": -1
+  },
+  "CHAVES_ESTE": {
+    "CO2": -1,
+    "RUIDO": -1,
+    "TEMP": -1
+  },
+  "CHAVES_SUL": {
+    "PART": -1,
+    "RUIDO": -1,
+    "LUMIN": -1
+  },
+  "CHAVES_CENTRO": {
+    "TEMP": -1,
+    "HUM": -1,
+    "CO2": -1
+  },
+  "CHAVES_NORTE": {
+    "CO2": -1,
     "TEMP": 50,
     "HUM": -1
   }

@@ -3,6 +3,6 @@
   "zona": "CHAVES_CENTRO",
   "videoStream": false,
   "leituras": [
-    { "tipo": "CO2", "intervaloMs": 60000 }
+    { "tipo": "CO2", "intervaloMs": 15000 }
   ]
 }

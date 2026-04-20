@@ -1,1 +1,10 @@
-[]
+[
+  {
+    "id": "S010",
+    "status": "desativado",
+    "zona": "CHAVES_CENTRO",
+    "tipos": "[CO2]",
+    "videoStream": false,
+    "lastSync": "2026-04-20T17:08:07"
+  }
+]

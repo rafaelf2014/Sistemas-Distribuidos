@@ -3,6 +3,7 @@
   "zona": "VILAREAL_ESTE",
   "videoStream": false,
   "leituras": [
-    { "tipo": "TEMP", "intervaloMs": 60000 }
+    { "tipo": "CO2",   "intervaloMs": 15000 },
+    { "tipo": "RUIDO", "intervaloMs": 15000 }
   ]
 }
