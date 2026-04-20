@@ -136,7 +136,7 @@ Abre automaticamente o Gateway_002 e os 10 sensores, cada um na sua própria jan
 | `HELLO\|id\|zona\|[tipos]\|video` | Sensor → Gateway | Registo inicial |
 | `DATA_SEND\|id\|tipo\|valor\|ts` | Sensor → Gateway | Envio de leitura |
 | `HEARTBEAT\|id` | Sensor → Gateway | Sinal de vida |
-| `BYE\|id` | Sensor → Gateway | Desligamento gracioso |
+| `BYE\|id` | Sensor → Gateway | Encerramento |
 | `DATA_FORWARD\|gw\|id\|zona\|tipo\|valor\|ts` | Gateway → Servidor | Reencaminhamento de dados |
 | `ALARM_FORWARD\|...` | Gateway → Servidor | Reencaminhamento de alarme |
 | `SENSOR_REG\|gw\|id\|zona\|tipos\|video` | Gateway → Servidor | Registo de sensor |
