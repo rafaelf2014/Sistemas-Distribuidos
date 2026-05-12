@@ -1,9 +1,0 @@
-{
-  "sensorId": "S008",
-  "zona": "CHAVES_OESTE",
-  "videoStream": false,
-  "leituras": [
-    { "tipo": "LUMIN",  "intervaloMs": 20000 },
-    { "tipo": "PART", "intervaloMs": 20000 }
-  ]
-}

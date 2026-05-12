@@ -1,8 +1,0 @@
-{
-  "sensorId": "S020",
-  "zona": "VILAREAL_CENTRO",
-  "videoStream": false,
-  "leituras": [
-    { "tipo": "CO2", "intervaloMs": 15000 }
-  ]
-}

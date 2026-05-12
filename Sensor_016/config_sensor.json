@@ -1,8 +1,0 @@
-{
-  "sensorId": "S016",
-  "zona": "VILAREAL_ESTE",
-  "videoStream": false,
-  "leituras": [
-    { "tipo": "TEMP", "intervaloMs": 10000 }
-  ]
-}

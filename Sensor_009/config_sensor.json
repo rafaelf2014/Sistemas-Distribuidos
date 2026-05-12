@@ -1,9 +1,0 @@
-{
-  "sensorId": "S009",
-  "zona": "CHAVES_CENTRO",
-  "videoStream": false,
-  "leituras": [
-    { "tipo": "TEMP", "intervaloMs": 5000 },
-    { "tipo": "HUM",  "intervaloMs": 10000 }
-  ]
-}

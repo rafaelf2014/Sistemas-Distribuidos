@@ -12,7 +12,7 @@ using System.Text.Json.Serialization;
 using Timer = System.Timers.Timer;
 
 // ==========================================
-// DTOs — JSON configs
+// JSON configs
 // ==========================================
 class AgregacaoConfig
 {

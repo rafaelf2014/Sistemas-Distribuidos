@@ -1,9 +1,0 @@
-{
-  "sensorId": "S018",
-  "zona": "VILAREAL_OESTE",
-  "videoStream": false,
-  "leituras": [
-    { "tipo": "LUMIN",  "intervaloMs": 20000 },
-    { "tipo": "PART", "intervaloMs": 20000 }
-  ]
-}
