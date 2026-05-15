@@ -10,7 +10,8 @@ using System.Threading;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Timer = System.Timers.Timer;
-
+using Grpc.Net.Client;
+using Gateway.GrpcServices;
 // ==========================================
 // DTOs — JSON configs
 // ==========================================
@@ -319,6 +320,9 @@ partial class MyTcpListener
             tickNovo = DateTime.Now.Ticks;
             _janelasTemporais[tipoDadoFiltro] = tickNovo;
         }
+        //Preparing gRPC Channel 
+        using var canal = GrpcChannel.ForAddress("http://localhost:50051");
+        var cliente = new LimpezaDados.LimpezaDadosClient(canal);
 
         foreach (string ficheiro in Directory.GetFiles(pastaProjeto, $"pendente_*_{tipoDadoFiltro}.csv"))
         {
@@ -335,15 +339,44 @@ partial class MyTcpListener
 
                 string[] linhas = File.ReadAllLines(ficheiro);
                 if (linhas.Length == 0) { File.Delete(ficheiro); continue; }
-
-                var valores = linhas
-                    .Where(l => double.TryParse(l, NumberStyles.Any, CultureInfo.InvariantCulture, out _))
-                    .Select(l => double.Parse(l, NumberStyles.Any, CultureInfo.InvariantCulture))
-                    .ToList();
-
-                if (valores.Count > 0)
+               // Processing raw data into a request for the gRPC service
+                var blocoRequest = new BlocoDadosBrutos();
+                foreach (string linha in linhas)
                 {
-                    double media = valores.Average();
+                    if (string.IsNullOrWhiteSpace(linha)) continue;
+                    
+                    blocoRequest.Dados.Add(new DadoBruto 
+                    {
+                        SensorId = sensorId,
+                        Zona = ObterZonaDoSensor(sensorId),
+                        TipoDado = tipoDado,
+                        ValorSujo = linha
+                    });
+                }
+
+                if (blocoRequest.Dados.Count == 0) { File.Delete(ficheiro); continue; }
+
+                // Called the gRPC service to clean the data
+                BlocoDadosLimpos respostaBloco;
+                try 
+                {
+                    respostaBloco = cliente.UniformizarBloco(blocoRequest);
+                }
+                catch (Exception ex)
+                {
+                    RegistarLogEsquerda($"[gRPC WARNING] Falha a contactar serviço de pré-processamento. A reter dados para a próxima tentativa. Erro: {ex.Message}");
+                    continue; 
+                }
+                //Extrating only the cleaned values that were successfully processed by the gRPC service
+                // If all values were rejected, we log a warning and delete the file to avoid infinite retries on bad data
+                var valoresLimpos = respostaBloco.Dados
+                                        .Where(d => d.Sucesso)
+                                        .Select(d => d.ValorLimpo)
+                                        .ToList();
+
+                if (valoresLimpos.Count > 0)
+                {
+                    double media = valoresLimpos.Average();
                     string ts = long.TryParse(ticksStr, out long ticks)
                         ? new DateTime(ticks).ToString("yyyy-MM-ddTHH:mm:ss")
                         : DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss");
@@ -355,6 +388,11 @@ partial class MyTcpListener
                         RegistarLogEsquerda($"Forward pendente de {sensorId} ({tipoDado}) OK.");
                     }
                     else RegistarLogEsquerda($"Falha Servidor: Ficheiro de {sensorId} ({tipoDado}) retido.", true);
+                }
+                else 
+                {
+                    File.Delete(ficheiro); 
+                    RegistarLogEsquerda($"[gRPC ERROR] O Serviço Externo rejeitou todos os dados do ficheiro do {sensorId}. Ficheiro descartado.");
                 }
             }
             catch (Exception ex) { RegistarLogEsquerda($"Erro pendente: {ex.Message}"); }

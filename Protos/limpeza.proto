@@ -1,0 +1,35 @@
+//ATENÇÂO Sempre que modificarmos .proto temos que reescrever nos ficheiros do pre_processamento
+//para isso basta cd Servico_PreProcessamento e escrever o comnd : py -m grpc_tools.protoc -I../Protos --python_out=. --grpc_python_out=. ../Protos/limpeza.proto
+
+syntax = "proto3";
+
+package pre_processamento;
+
+option csharp_namespace = "Gateway.GrpcServices";
+
+service LimpezaDados {
+  rpc UniformizarBloco (BlocoDadosBrutos) returns (BlocoDadosLimpos);
+}
+
+message DadoBruto {
+  string sensor_id = 1;
+  string zona = 2;
+  string tipo_dado = 3;
+  string valor_sujo = 4; 
+}
+
+message DadoLimpo {
+  string sensor_id = 1; 
+  bool sucesso = 2;
+  double valor_limpo = 3;
+  string mensagem_erro = 4;
+}
+
+
+message BlocoDadosBrutos {
+  repeated DadoBruto dados = 1; 
+}
+
+message BlocoDadosLimpos {
+  repeated DadoLimpo dados = 1;
+}

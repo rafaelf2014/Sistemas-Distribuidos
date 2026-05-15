@@ -170,7 +170,7 @@ namespace sensor
             if (_rng.Next(10) == 0) v += 60.0;
 
             string ts  = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss");
-            string val = Math.Round(v, 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            string val = v.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
             RegistarLog($"{cfg.TipoDado}: {val} recolhido.");
             EnviarMensagem($"DATA_SEND|{_idSensor}|{cfg.TipoDado}|{val}|{ts}");

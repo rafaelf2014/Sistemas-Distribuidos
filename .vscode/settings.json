@@ -3,5 +3,6 @@
         "**/bin": true,
         "**/obj": true,
         "**/.vs": true
-    }
+    },
+    "python-envs.defaultEnvManager": "ms-python.python:system"
 }
