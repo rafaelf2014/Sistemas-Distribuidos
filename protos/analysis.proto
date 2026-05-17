@@ -1,0 +1,65 @@
+syntax = "proto3";
+
+option csharp_namespace = "ServicoAnalise";
+
+package analysis;
+
+// Invocado pelo Servidor para análise estatística e deteção de padrões.
+// O serviço corre em Python com pandas/numpy/scipy.
+service AnaliseService {
+  rpc AnalisarZona     (PedidoAnalise)   returns (ResultadoAnalise);
+  rpc DetectarPadroes  (PedidoAnalise)   returns (ResultadoPadroes);
+  rpc PreviRisco       (PedidoPrevisao)  returns (ResultadoPrevisao);
+}
+
+// --- Pedidos ---
+
+message PedidoAnalise {
+  string zona        = 1;
+  string tipo_dado   = 2;
+  string sensor_id   = 3;  // opcional — vazio = todos os sensores da zona
+  string data_inicio = 4;  // ISO 8601
+  string data_fim    = 5;
+}
+
+message PedidoPrevisao {
+  string zona          = 1;
+  string tipo_dado     = 2;
+  int32  horas_futuras = 3;
+}
+
+// --- Resultados ---
+
+message ResultadoAnalise {
+  string zona           = 1;
+  string tipo_dado      = 2;
+  double media          = 3;
+  double desvio_padrao  = 4;
+  double minimo         = 5;
+  double maximo         = 6;
+  int32  total_leituras = 7;
+  int32  total_alarmes  = 8;
+  string timestamp      = 9;
+}
+
+message ResultadoPadroes {
+  string           zona      = 1;
+  string           tipo_dado = 2;
+  repeated Padrao  padroes   = 3;
+  string           timestamp = 4;
+}
+
+message Padrao {
+  string descricao = 1;
+  double confianca = 2;  // 0.0 – 1.0
+  string hora_pico = 3;  // ex: "14:00"
+}
+
+message ResultadoPrevisao {
+  string          zona            = 1;
+  string          tipo_dado       = 2;
+  repeated double valores_previstos = 3;
+  double          risco_saude     = 4;  // 0.0 – 1.0
+  string          recomendacao    = 5;
+  string          timestamp       = 6;
+}

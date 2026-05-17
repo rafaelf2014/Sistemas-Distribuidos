@@ -1,12 +1,15 @@
 {
   "gatewayId": "Gateway_001",
   "serverIp": "127.0.0.1",
+  "rabbitMqHost": "localhost",
+  "zonasSubscritas": [ "CHAVES_NORTE", "CHAVES_SUL", "CHAVES_ESTE", "CHAVES_OESTE", "CHAVES_CENTRO" ],
+  "preProcessamentoGrpcUrl": "http://localhost:50051",
   "agregacoes": [
-    { "tipo": "TEMP",  "unidade": "ºC",  "intervaloMs": 30000 },
-    { "tipo": "HUM",   "unidade": "%",   "intervaloMs": 40000 },
-    { "tipo": "CO2",   "unidade": "ppm", "intervaloMs": 40000 },
-    { "tipo": "RUIDO", "unidade": "dB",  "intervaloMs": 30000 },
-    { "tipo": "LUMIN", "unidade": "lux", "intervaloMs": 60000 },
-    { "tipo": "PART",   "unidade": "μg/m³", "intervaloMs": 60000 }
+    { "tipo": "TEMP",  "unidade": "ºC",     "intervaloMs": 30000 },
+    { "tipo": "HUM",   "unidade": "%",      "intervaloMs": 40000 },
+    { "tipo": "CO2",   "unidade": "ppm",    "intervaloMs": 40000 },
+    { "tipo": "RUIDO", "unidade": "dB",     "intervaloMs": 30000 },
+    { "tipo": "LUMIN", "unidade": "lux",    "intervaloMs": 60000 },
+    { "tipo": "PART",  "unidade": "µg/m³",  "intervaloMs": 60000 }
   ]
 }
