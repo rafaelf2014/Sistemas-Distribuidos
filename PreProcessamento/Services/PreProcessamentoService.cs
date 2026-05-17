@@ -30,36 +30,65 @@ namespace PreProcessamento.Services
             ["PART"]  = "µg/m³",
         };
 
+        public override Task<BlocoLeiturasProcessadas> NormalizarBloco(BlocoLeiturasBrutas request, ServerCallContext context)
+        {
+            var resposta = new BlocoLeiturasProcessadas();
+            foreach (var leitura in request.Dados)
+                resposta.Dados.Add(Processar(leitura));
+            return Task.FromResult(resposta);
+        }
+
         public override Task<LeituraProcessada> Normalizar(LeituraBruta request, ServerCallContext context)
+            => Task.FromResult(Processar(request));
+
+        private static LeituraProcessada Processar(LeituraBruta request)
         {
             double valor = request.Valor;
             string obs   = "";
 
-            // TODO: converter unidades (ex: F→C, mg/m³→ppm) consoante request.Unidade
+            // Converter para unidade canónica antes de validar
+            string unidade = request.Unidade.Trim();
+            switch (request.Tipo.ToUpper())
+            {
+                case "TEMP":
+                    if (unidade == "F")
+                        valor = (valor - 32) * 5.0 / 9.0;
+                    else if (unidade == "K")
+                        valor = valor - 273.15;
+                    break;
+                case "PART":
+                    if (unidade == "mg/m³")
+                        valor = valor * 1000.0;
+                    break;
+                case "LUMIN":
+                    if (unidade == "fc")
+                        valor = valor * 10.7639;
+                    break;
+            }
 
             // Validar intervalo
             bool valido = true;
-            if (_intervalos.TryGetValue(request.Tipo, out var intervalo))
+            if (_intervalos.TryGetValue(request.Tipo.ToUpper(), out var intervalo))
             {
                 if (valor < intervalo.Min || valor > intervalo.Max)
                 {
                     valido = false;
-                    obs    = $"Valor {valor} fora do intervalo [{intervalo.Min}, {intervalo.Max}] para {request.Tipo}";
+                    obs    = $"Valor {Math.Round(valor, 2)} fora do intervalo [{intervalo.Min}, {intervalo.Max}] para {request.Tipo}";
                 }
             }
 
-            return Task.FromResult(new LeituraProcessada
+            return new LeituraProcessada
             {
-                GatewayId       = request.GatewayId,
-                SensorId        = request.SensorId,
-                Zona            = request.Zona,
-                Tipo            = request.Tipo,
+                GatewayId        = request.GatewayId,
+                SensorId         = request.SensorId,
+                Zona             = request.Zona,
+                Tipo             = request.Tipo,
                 ValorNormalizado = Math.Round(valor, 2),
-                UnidadePadrao   = _unidadesPadrao.GetValueOrDefault(request.Tipo, request.Unidade),
-                Timestamp       = request.Timestamp,
-                Valido          = valido,
-                Observacao      = obs
-            });
+                UnidadePadrao    = _unidadesPadrao.GetValueOrDefault(request.Tipo, request.Unidade),
+                Timestamp        = request.Timestamp,
+                Valido           = valido,
+                Observacao       = obs
+            };
         }
     }
 }

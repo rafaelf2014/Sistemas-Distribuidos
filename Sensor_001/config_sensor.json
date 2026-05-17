@@ -2,6 +2,7 @@
   "sensorId": "S001",
   "zona": "CHAVES_NORTE",
   "videoStream": true,
+  "rabbitMqHost": "localhost",
   "leituras": [
     { "tipo": "TEMP", "intervaloMs": 5000 },
     { "tipo": "HUM",  "intervaloMs": 5000 }

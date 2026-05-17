@@ -10,6 +10,12 @@ using System.Threading;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Timer = System.Timers.Timer;
+using System.Text;
+using System.Threading.Tasks;
+using Grpc.Net.Client;
+using PreProcessamento;
+using RabbitMQ.Client;
+using RabbitMQ.Client.Events;
 
 // ==========================================
 // JSON configs
@@ -23,9 +29,12 @@ class AgregacaoConfig
 
 class ConfigGateway
 {
-    [JsonPropertyName("gatewayId")]  public string                GatewayId  { get; set; } = "Gateway_001";
-    [JsonPropertyName("serverIp")]   public string                ServerIp   { get; set; } = "127.0.0.1";
-    [JsonPropertyName("agregacoes")] public List<AgregacaoConfig> Agregacoes { get; set; } = new();
+    [JsonPropertyName("gatewayId")]               public string                GatewayId               { get; set; } = "Gateway_001";
+    [JsonPropertyName("serverIp")]                public string                ServerIp                { get; set; } = "127.0.0.1";
+    [JsonPropertyName("rabbitMqHost")]            public string                RabbitMqHost            { get; set; } = "localhost";
+    [JsonPropertyName("zonasSubscritas")]         public List<string>          ZonasSubscritas         { get; set; } = new();
+    [JsonPropertyName("preProcessamentoGrpcUrl")] public string                PreProcessamentoGrpcUrl { get; set; } = "http://localhost:50051";
+    [JsonPropertyName("agregacoes")]              public List<AgregacaoConfig> Agregacoes              { get; set; } = new();
 }
 
 class SensorEntry
@@ -42,8 +51,13 @@ partial class MyTcpListener
 {
     #region CAMPOS
 
-    static string _gatewayId = "Gateway_001";
-    static string _serverIp  = "127.0.0.1";
+    static string       _gatewayId    = "Gateway_001";
+    static string       _serverIp     = "127.0.0.1";
+    static string       _rabbitMqHost = "localhost";
+    static List<string> _zonasSubscritas = new();
+
+    static IConnection? _amqpConnection;
+    static IChannel?    _amqpChannel;
 
     static readonly string pastaProjeto    = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, @"..\..\..\"));
     static readonly string caminhoSensores = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, @"..\..\..\sensores.json"));
@@ -62,15 +76,16 @@ partial class MyTcpListener
 
     static readonly List<Timer> _timersAgregacao = new();
     static          Timer       _timerWatchdog;
-    static          TcpListener server = null;
 
     static readonly Dictionary<string, string>                     _unidadesMedida   = new();
     static          Dictionary<string, Dictionary<string, double>> _limitesAlarme    = new();
     static readonly Dictionary<string, long>                       _janelasTemporais = new();
 
+    static PreProcessamentoService.PreProcessamentoServiceClient? _grpcClient;
+
     #endregion
 
-    public static void Main()
+    public static async Task Main()
     {
         Console.CancelKeyPress += TratarEncerramento;
         InicializarSensoresJson();
@@ -82,23 +97,65 @@ partial class MyTcpListener
         _timerWatchdog.AutoReset = true;
         _timerWatchdog.Start();
 
-        // Listener de comandos do servidor (REQUEST_STREAM / STOP_STREAM)
         new Thread(IniciarListenerComandos) { IsBackground = true, Name = "CMD-Listener" }.Start();
 
-        try
-        {
-            server = new TcpListener(IPAddress.Any, 5000);
-            server.Start();
-            RegistarLogEsquerda("A escuta de sensores na porta 5000...");
+        await InicializarRabbitMQ();
+    }
 
-            while (true)
+    static async Task InicializarRabbitMQ()
+    {
+        const string EXCHANGE = "one_health";
+
+        while (true)
+        {
+            try
             {
-                TcpClient client = server.AcceptTcpClient();
-                new Thread(() => HandleSensor(client)).Start();
+                RegistarLogEsquerda($"[AMQP] A ligar ao broker: {_rabbitMqHost}...");
+
+                var factory = new ConnectionFactory { HostName = _rabbitMqHost };
+                _amqpConnection = await factory.CreateConnectionAsync();
+                _amqpChannel    = await _amqpConnection.CreateChannelAsync();
+
+                await _amqpChannel.ExchangeDeclareAsync(EXCHANGE, ExchangeType.Topic, durable: true, autoDelete: false);
+
+                foreach (string zona in _zonasSubscritas)
+                {
+                    string queue = $"gateway.{_gatewayId}.{zona}";
+                    await _amqpChannel.QueueDeclareAsync(queue, durable: true, exclusive: false, autoDelete: false);
+                    await _amqpChannel.QueueBindAsync(queue, EXCHANGE, $"{zona}.#");
+
+                    var consumer = new AsyncEventingBasicConsumer(_amqpChannel);
+                    consumer.ReceivedAsync += async (_, ea) =>
+                    {
+                        string msg = Encoding.UTF8.GetString(ea.Body.ToArray());
+                        ProcessarMensagemSensor(msg);
+                        await _amqpChannel.BasicAckAsync(ea.DeliveryTag, false);
+                    };
+                    await _amqpChannel.BasicConsumeAsync(queue, autoAck: false, consumer: consumer);
+                    RegistarLogEsquerda($"[AMQP] Subscrito: {zona}");
+                }
+
+                _isOnline = true;
+                RegistarLogEsquerda($"[AMQP] Broker ligado. A escutar {_zonasSubscritas.Count} zona(s).");
+
+                while (_amqpConnection?.IsOpen ?? false)
+                    await Task.Delay(2000);
+
+                _isOnline = false;
+                RegistarLogEsquerda("[AMQP] Ligação perdida. A reconectar...");
+            }
+            catch (Exception ex)
+            {
+                _isOnline = false;
+                RegistarLogEsquerda($"[AMQP] Erro: {ex.Message}. A tentar em 5s...");
+                await Task.Delay(5000);
+            }
+            finally
+            {
+                try { _amqpChannel?.Dispose(); _amqpConnection?.Dispose(); } catch { }
+                _amqpChannel = null; _amqpConnection = null;
             }
         }
-        catch (SocketException) { RegistarLogEsquerda("Sistema de escuta interrompido."); }
-        finally { server?.Stop(); }
     }
 
     #region ALARMES
@@ -184,8 +241,21 @@ partial class MyTcpListener
         }
 
         var cfg = JsonSerializer.Deserialize<ConfigGateway>(File.ReadAllText(caminho), _jsonRead)!;
-        _gatewayId = cfg.GatewayId;
-        _serverIp  = cfg.ServerIp;
+        _gatewayId       = cfg.GatewayId;
+        _serverIp        = cfg.ServerIp;
+        _rabbitMqHost    = cfg.RabbitMqHost;
+        _zonasSubscritas = cfg.ZonasSubscritas;
+
+        try
+        {
+            var canal = GrpcChannel.ForAddress(cfg.PreProcessamentoGrpcUrl);
+            _grpcClient = new PreProcessamentoService.PreProcessamentoServiceClient(canal);
+            RegistarLogEsquerda($"[gRPC] Canal iniciado: {cfg.PreProcessamentoGrpcUrl}");
+        }
+        catch (Exception ex)
+        {
+            RegistarLogEsquerda($"[gRPC] Falha ao iniciar canal: {ex.Message}");
+        }
 
         foreach (var ag in cfg.Agregacoes)
         {
@@ -336,17 +406,66 @@ partial class MyTcpListener
                 string[] linhas = File.ReadAllLines(ficheiro);
                 if (linhas.Length == 0) { File.Delete(ficheiro); continue; }
 
-                var valores = linhas
-                    .Where(l => double.TryParse(l, NumberStyles.Any, CultureInfo.InvariantCulture, out _))
-                    .Select(l => double.Parse(l, NumberStyles.Any, CultureInfo.InvariantCulture))
-                    .ToList();
+                string zona    = ObterZonaDoSensor(sensorId);
+                string unidade = _unidadesMedida.TryGetValue(tipoDado, out string? u) ? u : "";
+                string ts      = long.TryParse(ticksStr, out long ticks)
+                    ? new DateTime(ticks).ToString("yyyy-MM-ddTHH:mm:ss")
+                    : DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss");
 
-                if (valores.Count > 0)
+                var valoresNorm = new List<double>();
+
+                if (_grpcClient != null)
                 {
-                    double media = valores.Average();
-                    string ts = long.TryParse(ticksStr, out long ticks)
-                        ? new DateTime(ticks).ToString("yyyy-MM-ddTHH:mm:ss")
-                        : DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss");
+                    var bloco = new BlocoLeiturasBrutas();
+                    var rawsValidos = new List<double>();
+
+                    foreach (string linha in linhas)
+                    {
+                        if (!double.TryParse(linha, NumberStyles.Any, CultureInfo.InvariantCulture, out double raw)) continue;
+                        bloco.Dados.Add(new LeituraBruta
+                        {
+                            GatewayId = _gatewayId,
+                            SensorId  = sensorId,
+                            Zona      = zona,
+                            Tipo      = tipoDado,
+                            Valor     = raw,
+                            Unidade   = unidade,
+                            Timestamp = ts
+                        });
+                        rawsValidos.Add(raw);
+                    }
+
+                    if (bloco.Dados.Count > 0)
+                    {
+                        try
+                        {
+                            var respostas = _grpcClient.NormalizarBloco(bloco);
+                            foreach (var resp in respostas.Dados)
+                            {
+                                if (resp.Valido)
+                                    valoresNorm.Add(resp.ValorNormalizado);
+                                else
+                                    RegistarLogEsquerda($"[gRPC] Rejeitado: {resp.Observacao}");
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            RegistarLogEsquerda($"[gRPC] Falha no bloco: {ex.Message}. A usar valores brutos.");
+                            valoresNorm.AddRange(rawsValidos);
+                        }
+                    }
+                }
+                else
+                {
+                    valoresNorm = linhas
+                        .Where(l => double.TryParse(l, NumberStyles.Any, CultureInfo.InvariantCulture, out _))
+                        .Select(l => double.Parse(l, NumberStyles.Any, CultureInfo.InvariantCulture))
+                        .ToList();
+                }
+
+                if (valoresNorm.Count > 0)
+                {
+                    double media = valoresNorm.Average();
 
                     if (EnviarParaServidor("DATA_FORWARD", sensorId, tipoDado,
                             media.ToString("F2", CultureInfo.InvariantCulture), ts))
@@ -365,117 +484,92 @@ partial class MyTcpListener
 
     #region HANDLER DE SENSORES
 
-    static void HandleSensor(TcpClient client)
+    static void ProcessarMensagemSensor(string rawData)
     {
         try
         {
-            using NetworkStream stream = client.GetStream();
-            using StreamReader  reader = new StreamReader(stream);
-            using StreamWriter  writer = new StreamWriter(stream) { AutoFlush = true };
+            string[] parts  = rawData.Split('|');
+            string   command = parts[0].ToUpper();
 
-            string rawData;
-            while ((rawData = reader.ReadLine()) != null)
+            switch (command)
             {
-                string[] parts  = rawData.Split('|');
-                string command  = parts[0].ToUpper();
-                string resposta = "ACK_OK";
+                case "HELLO":
+                    if (parts.Length >= 4)
+                    {
+                        bool videoCapable = parts.Length >= 5 &&
+                                            bool.TryParse(parts[4], out bool vc) && vc;
 
-                switch (command)
-                {
-                    case "HELLO":
-                        if (parts.Length >= 4)
+                        RegistarOuAtualizarSensor(parts[1], parts[2], parts[3], videoCapable);
+                        AutoPopularAlarmes(parts[2], parts[3]);
+                        EnviarRegistoSensorParaServidor(parts[1], parts[2], parts[3], videoCapable);
+                    }
+                    break;
+
+                case "DATA_SEND":
+                    if (parts.Length >= 5 &&
+                        double.TryParse(parts[3], NumberStyles.Any, CultureInfo.InvariantCulture, out double valor))
+                    {
+                        if (ValidarSensor(parts[1], parts[2]))
                         {
-                            bool videoCapable = parts.Length >= 5 &&
-                                                bool.TryParse(parts[4], out bool vc) && vc;
+                            string sensorId  = parts[1];
+                            string tipoDado  = parts[2].ToUpper();
+                            string timestamp = parts[4];
+                            string zona      = ObterZonaDoSensor(sensorId).ToUpper();
 
-                            RegistarOuAtualizarSensor(parts[1], parts[2], parts[3], videoCapable);
-                            AutoPopularAlarmes(parts[2], parts[3]);
-                            EnviarRegistoSensorParaServidor(parts[1], parts[2], parts[3], videoCapable);
-                        }
-                        resposta = "ACK_HELLO|OK";
-                        break;
-
-                    case "DATA_SEND":
-                        if (parts.Length >= 5 &&
-                            double.TryParse(parts[3], NumberStyles.Any, CultureInfo.InvariantCulture, out double valor))
-                        {
-                            if (ValidarSensor(parts[1], parts[2]))
+                            long tickAtivo;
+                            lock (_bufferFileLock)
                             {
-                                string sensorId  = parts[1];
-                                string tipoDado  = parts[2].ToUpper();
-                                string timestamp = parts[4];
-                                string zona      = ObterZonaDoSensor(sensorId).ToUpper();
-
-                                long tickAtivo;
-                                lock (_bufferFileLock)
-                                {
-                                    tickAtivo = _janelasTemporais.TryGetValue(tipoDado, out long tk)
-                                        ? tk : DateTime.Now.Ticks;
-                                }
-                                File.AppendAllText(
-                                    Path.Combine(pastaProjeto, $"pendente_{tickAtivo}_{sensorId}_{tipoDado}.csv"),
-                                    valor.ToString(CultureInfo.InvariantCulture) + Environment.NewLine);
-
-                                string un = _unidadesMedida.TryGetValue(tipoDado, out string u) ? u : "";
-
-                                bool isAnomalia = false;
-                                lock (_alarmesLock)
-                                {
-                                    if (_limitesAlarme.TryGetValue(zona, out var z) &&
-                                        z.TryGetValue(tipoDado, out double limite) &&
-                                        limite != -1.0 && valor > limite)
-                                        isAnomalia = true;
-                                }
-
-                                if (isAnomalia)
-                                {
-                                    RegistarLogEsquerda(
-                                        $"EDGE ANALYTICS: Anomalia em {sensorId}! ({tipoDado} = {valor}{un} @ {zona})", true);
-
-                                    bool temVideo;
-                                    lock (fileLock)
-                                    {
-                                        temVideo = _sensoresCache.TryGetValue(sensorId, out var sc) && sc.VideoStream;
-                                    }
-                                    if (temVideo)
-                                        RegistarLogEsquerda($"[VIDEO] {sensorId} tem capacidade de streaming.", true);
-
-                                    EnviarParaServidor("ALARM_FORWARD", sensorId, tipoDado, parts[3], timestamp);
-                                    resposta = "ACK_DATA|ALARM_DETECTED";
-                                }
-                                else
-                                {
-                                    RegistarLogEsquerda($"{sensorId}: {tipoDado} = {valor}{un}");
-                                    resposta = "ACK_DATA|OK";
-                                }
+                                tickAtivo = _janelasTemporais.TryGetValue(tipoDado, out long tk)
+                                    ? tk : DateTime.Now.Ticks;
                             }
-                            else resposta = "ACK_DATA|ERRO_VALIDACAO";
+                            File.AppendAllText(
+                                Path.Combine(pastaProjeto, $"pendente_{tickAtivo}_{sensorId}_{tipoDado}.csv"),
+                                valor.ToString(CultureInfo.InvariantCulture) + Environment.NewLine);
+
+                            string un = _unidadesMedida.TryGetValue(tipoDado, out string? u) ? u : "";
+
+                            bool isAnomalia = false;
+                            lock (_alarmesLock)
+                            {
+                                if (_limitesAlarme.TryGetValue(zona, out var z) &&
+                                    z.TryGetValue(tipoDado, out double limite) &&
+                                    limite != -1.0 && valor > limite)
+                                    isAnomalia = true;
+                            }
+
+                            if (isAnomalia)
+                            {
+                                RegistarLogEsquerda(
+                                    $"EDGE ANALYTICS: Anomalia em {sensorId}! ({tipoDado} = {valor}{un} @ {zona})", true);
+
+                                bool temVideo;
+                                lock (fileLock)
+                                {
+                                    temVideo = _sensoresCache.TryGetValue(sensorId, out var sc) && sc.VideoStream;
+                                }
+                                if (temVideo)
+                                    RegistarLogEsquerda($"[VIDEO] {sensorId} tem capacidade de streaming.", true);
+
+                                EnviarParaServidor("ALARM_FORWARD", sensorId, tipoDado, parts[3], timestamp);
+                            }
+                            else
+                            {
+                                RegistarLogEsquerda($"{sensorId}: {tipoDado} = {valor}{un}");
+                            }
                         }
-                        break;
+                    }
+                    break;
 
-                    case "HEARTBEAT":
-                        AtualizarLastSync(parts[1]);
-                        resposta = "ACK_HEARTBEAT|OK";
-                        break;
+                case "HEARTBEAT":
+                    if (parts.Length >= 2) AtualizarLastSync(parts[1]);
+                    break;
 
-                    case "BYE":
-                        if (parts.Length >= 2) AtualizarEstadoSensor(parts[1], "desativado");
-                        resposta = "ACK_BYE|OK";
-                        break;
-
-                    default:
-                        resposta = "ACK_ERR|Comando Desconhecido";
-                        break;
-                }
-
-                // Piggyback any pending stream command onto the ACK
-                string cmdSuffix = parts.Length > 1 ? ComandoPendenteParaSensor(parts[1]) : "";
-                writer.WriteLine(resposta + cmdSuffix);
-                if (command == "BYE") break;
+                case "BYE":
+                    if (parts.Length >= 2) AtualizarEstadoSensor(parts[1], "desativado");
+                    break;
             }
         }
-        catch (Exception ex) { RegistarLogEsquerda($"Erro no handler do sensor: {ex.Message}"); }
-        finally { client.Close(); }
+        catch (Exception ex) { RegistarLogEsquerda($"Erro ao processar mensagem: {ex.Message}"); }
     }
 
     #endregion
@@ -538,7 +632,7 @@ partial class MyTcpListener
         _timerWatchdog?.Stop();
         GuardarAlarmesJson();
 
-        server?.Stop();
+        try { _amqpChannel?.Dispose(); _amqpConnection?.Dispose(); } catch { }
         Thread.Sleep(500);
         Environment.Exit(0);
     }

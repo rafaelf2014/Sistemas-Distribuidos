@@ -12,7 +12,7 @@ partial class MyTcpListener
     private static readonly List<string> _alarmesEsquerda = new();
     private static readonly List<string> _logsEsquerda    = new();
     private static readonly List<string> _logsDireita     = new();
-    private static bool _isOnline = true;
+    private static bool _isOnline = false;
 
     #endregion
 

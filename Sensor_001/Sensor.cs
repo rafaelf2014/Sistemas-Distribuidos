@@ -2,12 +2,16 @@ using System;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
+using System.Text;
 using System.Timers;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Collections.Generic;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using OpenCvSharp;
+using RabbitMQ.Client;
+using RabbitMQ.Client.Events;
 using Timer = System.Timers.Timer;
 
 namespace sensor
@@ -22,10 +26,11 @@ namespace sensor
 
     class ConfigSensor
     {
-        [JsonPropertyName("sensorId")]    public string              SensorId    { get; set; } = "S???";
-        [JsonPropertyName("zona")]        public string              Zona        { get; set; } = "DESCONHECIDA";
-        [JsonPropertyName("videoStream")] public bool                VideoStream { get; set; } = false;
-        [JsonPropertyName("leituras")]    public List<LeituraConfig> Leituras    { get; set; } = new();
+        [JsonPropertyName("sensorId")]     public string              SensorId     { get; set; } = "S???";
+        [JsonPropertyName("zona")]         public string              Zona         { get; set; } = "DESCONHECIDA";
+        [JsonPropertyName("videoStream")]  public bool                VideoStream  { get; set; } = false;
+        [JsonPropertyName("rabbitMqHost")] public string              RabbitMqHost { get; set; } = "localhost";
+        [JsonPropertyName("leituras")]     public List<LeituraConfig> Leituras     { get; set; } = new();
     }
 
     class SensorConfig
@@ -40,14 +45,14 @@ namespace sensor
     {
         #region CAMPOS
 
-        static StreamWriter _writer;
-        static StreamReader _reader;
-        static readonly object streamLock = new object();
-
         static string _idSensor    = "S???";
         static string _zona        = "DESCONHECIDA";
         static bool   _videoStream = false;
         static string _dataTypes   = "";
+        static string _brokerHost  = "localhost";
+
+        static IConnection? _connection;
+        static IChannel?    _channel;
 
         static Timer _timerHeartbeat;
         static readonly List<Timer> _timersDados       = new();
@@ -60,21 +65,22 @@ namespace sensor
         private static readonly JsonSerializerOptions _jsonRead  = new() { PropertyNameCaseInsensitive = true };
         private static readonly JsonSerializerOptions _jsonWrite = new() { WriteIndented = true };
 
-        private static bool   _isOnline        = false;
-        private static bool   _encerrando      = false;
-        private static string _gatewayConectado = "";
+        private static bool   _isOnline   = false;
+        private static bool   _encerrando = false;
+        private static string _brokerLabel = "";
 
         private static volatile bool _streamingAtivo = false;
-        private static Thread        _threadStream   = null;
+        private static Thread?       _threadStream   = null;
+
+        private const string EXCHANGE = "one_health";
 
         #endregion
 
         #region INICIALIZAÇÃO
 
-        static void Main(string[] args)
+        static async Task Main(string[] args)
         {
             Console.CancelKeyPress += TratarEncerramento;
-            string ipGateway = args.Length > 0 ? args[0] : "127.0.0.1";
 
             List<SensorConfig> configs = CarregarConfiguracoes();
             DesenharDashboard();
@@ -86,23 +92,39 @@ namespace sensor
                 {
                     AlterarEstado(false, "A LIGAR...");
 
-                    using (TcpClient client = new TcpClient(ipGateway, 5000))
-                    using (NetworkStream stream = client.GetStream())
-                    using (StreamReader reader = new StreamReader(stream))
-                    using (StreamWriter writer = new StreamWriter(stream) { AutoFlush = true })
+                    var factory = new ConnectionFactory { HostName = _brokerHost };
+                    _connection = await factory.CreateConnectionAsync();
+                    _channel    = await _connection.CreateChannelAsync();
+
+                    await _channel.ExchangeDeclareAsync(EXCHANGE, ExchangeType.Topic, durable: true, autoDelete: false);
+
+                    // Queue exclusiva para comandos destinados a este sensor (stream requests)
+                    await _channel.QueueDeclareAsync($"commands.{_idSensor}", durable: false, exclusive: true, autoDelete: true);
+                    var consumer = new AsyncEventingBasicConsumer(_channel);
+                    consumer.ReceivedAsync += async (_, ea) =>
                     {
-                        lock (streamLock) { _writer = writer; _reader = reader; }
-                        AlterarEstado(true, "Gateway");
+                        string cmd = Encoding.UTF8.GetString(ea.Body.ToArray());
+                        ProcessarComando(cmd);
+                        await _channel.BasicAckAsync(ea.DeliveryTag, false);
+                    };
+                    await _channel.BasicConsumeAsync($"commands.{_idSensor}", autoAck: false, consumer: consumer);
 
-                        EnviarMensagem($"HELLO|{_idSensor}|{_zona}|[{_dataTypes}]|{(_videoStream ? "true" : "false")}");
+                    AlterarEstado(true, $"Broker ({_brokerHost})");
+                    Publicar($"HELLO|{_idSensor}|{_zona}|[{_dataTypes}]|{(_videoStream ? "true" : "false")}", $"{_zona}.CONTROL");
 
-                        while (_isOnline) Thread.Sleep(1000);
-                    }
+                    while (!_encerrando && (_connection?.IsOpen ?? false))
+                        await Task.Delay(1000);
                 }
-                catch (Exception)
+                catch (Exception ex)
                 {
+                    RegistarLog($"Erro broker: {ex.Message}");
                     AlterarEstado(false, "A TENTAR EM 5S...");
-                    Thread.Sleep(5000);
+                    await Task.Delay(5000);
+                }
+                finally
+                {
+                    try { _channel?.Dispose(); _connection?.Dispose(); } catch { }
+                    _channel = null; _connection = null;
                 }
             }
         }
@@ -125,6 +147,7 @@ namespace sensor
             _idSensor    = cfg.SensorId;
             _zona        = cfg.Zona;
             _videoStream = cfg.VideoStream;
+            _brokerHost  = cfg.RabbitMqHost;
             _dataTypes   = string.Join(",", cfg.Leituras.ConvertAll(l => l.Tipo.ToUpper()));
 
             return cfg.Leituras.ConvertAll(l => new SensorConfig
@@ -161,51 +184,44 @@ namespace sensor
 
             double v = cfg.TipoDado switch
             {
-                "TEMP"  => _rng.NextDouble() * 50.0,
-                "HUM"   => _rng.NextDouble() * 100.0,
-                _       => _rng.NextDouble() * 100.0
+                "TEMP" => _rng.NextDouble() * 50.0,
+                "HUM"  => _rng.NextDouble() * 100.0,
+                _      => _rng.NextDouble() * 100.0
             };
 
-            // 10%
             if (_rng.Next(10) == 0) v += 60.0;
 
             string ts  = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss");
             string val = Math.Round(v, 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
 
             RegistarLog($"{cfg.TipoDado}: {val} recolhido.");
-            EnviarMensagem($"DATA_SEND|{_idSensor}|{cfg.TipoDado}|{val}|{ts}");
+            Publicar($"DATA_SEND|{_idSensor}|{cfg.TipoDado}|{val}|{ts}", $"{_zona}.{cfg.TipoDado}");
         }
 
         static void EnviarHeartbeatAutomatico(object sender, ElapsedEventArgs e)
         {
             if (!_isOnline) return;
-            EnviarMensagem($"HEARTBEAT|{_idSensor}");
+            Publicar($"HEARTBEAT|{_idSensor}", $"{_zona}.CONTROL");
         }
 
-        static void EnviarMensagem(string mensagem)
+        static void Publicar(string mensagem, string routingKey)
         {
-            lock (streamLock)
+            if (_channel == null || !_isOnline) return;
+            try
             {
-                try
-                {
-                    if (_writer == null) return;
-                    _writer.WriteLine(mensagem);
-                    string resposta = _reader.ReadLine();
-                    if (resposta == null) { AlterarEstado(false, "FALHA REDE"); return; }
-                    ProcessarComando(resposta);
-                }
-                catch { AlterarEstado(false, "FALHA REDE"); }
+                var body = Encoding.UTF8.GetBytes(mensagem);
+                _channel.BasicPublishAsync(EXCHANGE, routingKey, body).GetAwaiter().GetResult();
             }
+            catch { AlterarEstado(false, "FALHA BROKER"); }
         }
 
         #endregion
 
         #region STREAMING
 
-        // Analisa o ACK do gateway e activa/desactiva o stream se vier um comando, é pra isto que ser o hijack no gateway
-        static void ProcessarComando(string resposta)
+        static void ProcessarComando(string cmd)
         {
-            string[] partes = resposta.Split('|');
+            string[] partes = cmd.Split('|');
             for (int i = 0; i < partes.Length; i++)
             {
                 if (partes[i] == "STREAM_TO" && i + 1 < partes.Length)
@@ -240,7 +256,7 @@ namespace sensor
         {
             try
             {
-                using var capture = new VideoCapture(0); // câmara índice 0
+                using var capture = new VideoCapture(0);
                 if (!capture.IsOpened())
                 {
                     RegistarLog("Câmara não disponível.");
@@ -258,14 +274,13 @@ namespace sensor
                 {
                     if (!capture.Read(frame) || frame.Empty()) continue;
 
-                    // diminuir tamanho dos frames
                     Cv2.ImEncode(".jpg", frame, out byte[] jpeg,
                         new ImageEncodingParam(ImwriteFlags.JpegQuality, 65));
 
                     if (jpeg.Length <= 60000)
                         udpClient.Send(jpeg, jpeg.Length, endpoint);
 
-                    Thread.Sleep(33); // ~30 fps
+                    Thread.Sleep(33);
                 }
             }
             catch (Exception ex) { RegistarLog($"Erro stream: {ex.Message}"); }
@@ -278,8 +293,8 @@ namespace sensor
 
         static void AlterarEstado(bool status, string descricao)
         {
-            _isOnline        = status;
-            _gatewayConectado = descricao;
+            _isOnline    = status;
+            _brokerLabel = descricao;
             DesenharDashboard();
         }
 
@@ -310,8 +325,8 @@ namespace sensor
             else              { Console.ForegroundColor = ConsoleColor.DarkGray; Console.Write("NAO"); }
             Console.ResetColor();
             Console.Write(" | REDE: ");
-            if (_isOnline) { Console.ForegroundColor = ConsoleColor.Green; Console.WriteLine($"ONLINE ({_gatewayConectado})".PadRight(62)); }
-            else           { Console.ForegroundColor = ConsoleColor.Red;   Console.WriteLine($"OFFLINE / {_gatewayConectado}".PadRight(62)); }
+            if (_isOnline) { Console.ForegroundColor = ConsoleColor.Green; Console.WriteLine($"ONLINE ({_brokerLabel})".PadRight(62)); }
+            else           { Console.ForegroundColor = ConsoleColor.Red;   Console.WriteLine($"OFFLINE / {_brokerLabel}".PadRight(62)); }
             Console.ResetColor();
 
             Console.ForegroundColor = ConsoleColor.Cyan;
@@ -348,7 +363,7 @@ namespace sensor
             _encerrando = true;
             foreach (var t in _timersDados) t.Stop();
             _timerHeartbeat?.Stop();
-            if (_isOnline && _writer != null) EnviarMensagem($"BYE|{_idSensor}");
+            if (_isOnline) Publicar($"BYE|{_idSensor}", $"{_zona}.CONTROL");
             AlterarEstado(false, "DESLIGADO");
             Thread.Sleep(500);
             Environment.Exit(0);

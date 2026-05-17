@@ -10,6 +10,8 @@ using System.Threading;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Timer = System.Timers.Timer;
+using Grpc.Net.Client;
+using PreProcessamento;
 
 // ==========================================
 // DTOs — JSON configs
@@ -23,9 +25,10 @@ class AgregacaoConfig
 
 class ConfigGateway
 {
-    [JsonPropertyName("gatewayId")]  public string                GatewayId  { get; set; } = "Gateway_001";
-    [JsonPropertyName("serverIp")]   public string                ServerIp   { get; set; } = "127.0.0.1";
-    [JsonPropertyName("agregacoes")] public List<AgregacaoConfig> Agregacoes { get; set; } = new();
+    [JsonPropertyName("gatewayId")]               public string                GatewayId               { get; set; } = "Gateway_002";
+    [JsonPropertyName("serverIp")]                public string                ServerIp                { get; set; } = "127.0.0.1";
+    [JsonPropertyName("preProcessamentoGrpcUrl")] public string                PreProcessamentoGrpcUrl { get; set; } = "http://localhost:50051";
+    [JsonPropertyName("agregacoes")]              public List<AgregacaoConfig> Agregacoes              { get; set; } = new();
 }
 
 class SensorEntry
@@ -67,6 +70,8 @@ partial class MyTcpListener
     static readonly Dictionary<string, string>                     _unidadesMedida   = new();
     static          Dictionary<string, Dictionary<string, double>> _limitesAlarme    = new();
     static readonly Dictionary<string, long>                       _janelasTemporais = new();
+
+    static PreProcessamentoService.PreProcessamentoServiceClient? _grpcClient;
 
     #endregion
 
@@ -186,6 +191,17 @@ partial class MyTcpListener
         var cfg = JsonSerializer.Deserialize<ConfigGateway>(File.ReadAllText(caminho), _jsonRead)!;
         _gatewayId = cfg.GatewayId;
         _serverIp  = cfg.ServerIp;
+
+        try
+        {
+            var canal = GrpcChannel.ForAddress(cfg.PreProcessamentoGrpcUrl);
+            _grpcClient = new PreProcessamentoService.PreProcessamentoServiceClient(canal);
+            RegistarLogEsquerda($"[gRPC] Canal iniciado: {cfg.PreProcessamentoGrpcUrl}");
+        }
+        catch (Exception ex)
+        {
+            RegistarLogEsquerda($"[gRPC] Falha ao iniciar canal: {ex.Message}");
+        }
 
         foreach (var ag in cfg.Agregacoes)
         {
@@ -336,17 +352,66 @@ partial class MyTcpListener
                 string[] linhas = File.ReadAllLines(ficheiro);
                 if (linhas.Length == 0) { File.Delete(ficheiro); continue; }
 
-                var valores = linhas
-                    .Where(l => double.TryParse(l, NumberStyles.Any, CultureInfo.InvariantCulture, out _))
-                    .Select(l => double.Parse(l, NumberStyles.Any, CultureInfo.InvariantCulture))
-                    .ToList();
+                string zona    = ObterZonaDoSensor(sensorId);
+                string unidade = _unidadesMedida.TryGetValue(tipoDado, out string? u) ? u : "";
+                string ts      = long.TryParse(ticksStr, out long ticks)
+                    ? new DateTime(ticks).ToString("yyyy-MM-ddTHH:mm:ss")
+                    : DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss");
 
-                if (valores.Count > 0)
+                var valoresNorm = new List<double>();
+
+                if (_grpcClient != null)
                 {
-                    double media = valores.Average();
-                    string ts = long.TryParse(ticksStr, out long ticks)
-                        ? new DateTime(ticks).ToString("yyyy-MM-ddTHH:mm:ss")
-                        : DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss");
+                    var bloco = new BlocoLeiturasBrutas();
+                    var rawsValidos = new List<double>();
+
+                    foreach (string linha in linhas)
+                    {
+                        if (!double.TryParse(linha, NumberStyles.Any, CultureInfo.InvariantCulture, out double raw)) continue;
+                        bloco.Dados.Add(new LeituraBruta
+                        {
+                            GatewayId = _gatewayId,
+                            SensorId  = sensorId,
+                            Zona      = zona,
+                            Tipo      = tipoDado,
+                            Valor     = raw,
+                            Unidade   = unidade,
+                            Timestamp = ts
+                        });
+                        rawsValidos.Add(raw);
+                    }
+
+                    if (bloco.Dados.Count > 0)
+                    {
+                        try
+                        {
+                            var respostas = _grpcClient.NormalizarBloco(bloco);
+                            foreach (var resp in respostas.Dados)
+                            {
+                                if (resp.Valido)
+                                    valoresNorm.Add(resp.ValorNormalizado);
+                                else
+                                    RegistarLogEsquerda($"[gRPC] Rejeitado: {resp.Observacao}");
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            RegistarLogEsquerda($"[gRPC] Falha no bloco: {ex.Message}. A usar valores brutos.");
+                            valoresNorm.AddRange(rawsValidos);
+                        }
+                    }
+                }
+                else
+                {
+                    valoresNorm = linhas
+                        .Where(l => double.TryParse(l, NumberStyles.Any, CultureInfo.InvariantCulture, out _))
+                        .Select(l => double.Parse(l, NumberStyles.Any, CultureInfo.InvariantCulture))
+                        .ToList();
+                }
+
+                if (valoresNorm.Count > 0)
+                {
+                    double media = valoresNorm.Average();
 
                     if (EnviarParaServidor("DATA_FORWARD", sensorId, tipoDado,
                             media.ToString("F2", CultureInfo.InvariantCulture), ts))

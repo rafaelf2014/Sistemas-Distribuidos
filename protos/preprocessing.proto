@@ -7,7 +7,16 @@ package preprocessing;
 // Invocado pelo Gateway antes de escrever para o buffer CSV.
 // Recebe uma leitura bruta do sensor e devolve o valor normalizado e validado.
 service PreProcessamentoService {
-  rpc Normalizar (LeituraBruta) returns (LeituraProcessada);
+  rpc Normalizar      (LeituraBruta)        returns (LeituraProcessada);
+  rpc NormalizarBloco (BlocoLeiturasBrutas) returns (BlocoLeiturasProcessadas);
+}
+
+message BlocoLeiturasBrutas {
+  repeated LeituraBruta dados = 1;
+}
+
+message BlocoLeiturasProcessadas {
+  repeated LeituraProcessada dados = 1;
 }
 
 message LeituraBruta {
