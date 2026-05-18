@@ -41,7 +41,7 @@ namespace sensor
 
     #endregion
 
-    class Program
+    partial class Program
     {
         #region CAMPOS
 
@@ -55,18 +55,17 @@ namespace sensor
         static IChannel?    _channel;
 
         static Timer _timerHeartbeat;
-        static readonly List<Timer> _timersDados       = new();
+        static readonly List<Timer> _timersDados        = new();
         static readonly int         _intervaloHeartbeat = 5000;
 
         private static readonly object       _consoleLock = new object();
         private static readonly List<string> _ultimosLogs = new();
-        private static readonly Random       _rng         = new();
 
         private static readonly JsonSerializerOptions _jsonRead  = new() { PropertyNameCaseInsensitive = true };
         private static readonly JsonSerializerOptions _jsonWrite = new() { WriteIndented = true };
 
-        private static bool   _isOnline   = false;
-        private static bool   _encerrando = false;
+        private static bool   _isOnline    = false;
+        private static bool   _encerrando  = false;
         private static string _brokerLabel = "";
 
         private static volatile bool _streamingAtivo = false;
@@ -98,7 +97,6 @@ namespace sensor
 
                     await _channel.ExchangeDeclareAsync(EXCHANGE, ExchangeType.Topic, durable: true, autoDelete: false);
 
-                    // Queue exclusiva para comandos destinados a este sensor (stream requests)
                     await _channel.QueueDeclareAsync($"commands.{_idSensor}", durable: false, exclusive: true, autoDelete: true);
                     var consumer = new AsyncEventingBasicConsumer(_channel);
                     consumer.ReceivedAsync += async (_, ea) =>
@@ -176,27 +174,7 @@ namespace sensor
 
         #endregion
 
-        #region DADOS & HEARTBEAT
-
-        static void GerarEEnviarDado(SensorConfig cfg)
-        {
-            if (!_isOnline) return;
-
-            double v = cfg.TipoDado switch
-            {
-                "TEMP" => _rng.NextDouble() * 50.0,
-                "HUM"  => _rng.NextDouble() * 100.0,
-                _      => _rng.NextDouble() * 100.0
-            };
-
-            if (_rng.Next(10) == 0) v += 60.0;
-
-            string ts  = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss");
-            string val = Math.Round(v, 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
-
-            RegistarLog($"{cfg.TipoDado}: {val} recolhido.");
-            Publicar($"DATA_SEND|{_idSensor}|{cfg.TipoDado}|{val}|{ts}", $"{_zona}.{cfg.TipoDado}");
-        }
+        #region BROKER
 
         static void EnviarHeartbeatAutomatico(object sender, ElapsedEventArgs e)
         {

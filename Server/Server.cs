@@ -27,6 +27,9 @@ partial class ServerCentral
     // Sensores com video
     private static readonly ConcurrentDictionary<string, (string GatewayId, string Zona, string Tipos)> _sensoresStream = new();
 
+    // Estado de cada sensor reportado pelo gateway
+    private static readonly ConcurrentDictionary<string, string> _sensoresStatus = new();
+
     #endregion
 
     #region INICIALIZAÇÃO
@@ -44,6 +47,7 @@ partial class ServerCentral
         };
         _threadConsumidor.Start();
         IniciarTecladoThread();
+        IniciarApi();
 
         try
         {
@@ -127,6 +131,13 @@ partial class ServerCentral
                     writer.WriteLine("ACK_SENSOR_REG|OK");
                     string videoLabel = videoCapable ? "VIDEO:SIM" : "VIDEO:NAO";
                     RegistarLog($"Sensor reg.: {partes[2]} | GW:{partes[1]} | ZONA:{partes[3]} | {videoLabel}");
+                }
+                else if (partes.Length == 4 && partes[0] == "SENSOR_STATUS")
+                {
+                    // SENSOR_STATUS|gatewayId|sensorId|estado
+                    _sensoresStatus[partes[2]] = partes[3];
+                    writer.WriteLine("ACK_SENSOR_STATUS|OK");
+                    RegistarLog($"Status: {partes[2]} → {partes[3]}");
                 }
                 else writer.WriteLine("ACK_FORWARDDATA|ERRO FORMATO");
             }

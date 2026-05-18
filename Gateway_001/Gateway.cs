@@ -77,6 +77,9 @@ partial class MyTcpListener
     static readonly List<Timer> _timersAgregacao = new();
     static          Timer       _timerWatchdog;
 
+    static readonly Dictionary<string, DateTime> _ultimoAlarme = new();
+    static readonly object                        _alarmeCooldownLock = new();
+
     static readonly Dictionary<string, string>                     _unidadesMedida   = new();
     static          Dictionary<string, Dictionary<string, double>> _limitesAlarme    = new();
     static readonly Dictionary<string, long>                       _janelasTemporais = new();
@@ -348,6 +351,21 @@ partial class MyTcpListener
             PersistirCacheParaJson();
             RegistarLogEsquerda($"Sensor {id} {estado}.");
         }
+        NotificarServidorStatus(id, estado);
+    }
+
+    static void NotificarServidorStatus(string sensorId, string estado)
+    {
+        try
+        {
+            using var tc = new TcpClient(_serverIp, 14000);
+            using var s  = tc.GetStream();
+            using var w  = new StreamWriter(s) { AutoFlush = true };
+            using var r  = new StreamReader(s);
+            w.WriteLine($"SENSOR_STATUS|{_gatewayId}|{sensorId}|{estado}");
+            r.ReadLine();
+        }
+        catch { /* servidor pode estar offline — sem problema, o próximo HELLO correge */ }
     }
 
     static string ObterZonaDoSensor(string id)
@@ -360,6 +378,7 @@ partial class MyTcpListener
 
     static void VerificarSensoresPerdidos(object sender, ElapsedEventArgs e)
     {
+        var perdidos = new List<string>();
         lock (fileLock)
         {
             bool alterado = false;
@@ -370,11 +389,14 @@ partial class MyTcpListener
                 {
                     _sensoresCache[id] = ("manutencao", s.Zona, s.Tipos, s.VideoStream, s.LastSync);
                     alterado = true;
+                    perdidos.Add(id);
                     RegistarLogEsquerda($"Watchdog: Sensor {id} precisa de manutencao (Timeout).", true);
                 }
             }
             if (alterado) PersistirCacheParaJson();
         }
+        foreach (var id in perdidos)
+            NotificarServidorStatus(id, "manutencao");
     }
 
     #endregion
@@ -539,18 +561,30 @@ partial class MyTcpListener
 
                             if (isAnomalia)
                             {
-                                RegistarLogEsquerda(
-                                    $"EDGE ANALYTICS: Anomalia em {sensorId}! ({tipoDado} = {valor}{un} @ {zona})", true);
-
-                                bool temVideo;
-                                lock (fileLock)
+                                string chave = $"{sensorId}.{tipoDado}";
+                                bool emCooldown;
+                                lock (_alarmeCooldownLock)
                                 {
-                                    temVideo = _sensoresCache.TryGetValue(sensorId, out var sc) && sc.VideoStream;
+                                    emCooldown = _ultimoAlarme.TryGetValue(chave, out DateTime ultimo) &&
+                                                 (DateTime.Now - ultimo).TotalSeconds < 30;
+                                    if (!emCooldown) _ultimoAlarme[chave] = DateTime.Now;
                                 }
-                                if (temVideo)
-                                    RegistarLogEsquerda($"[VIDEO] {sensorId} tem capacidade de streaming.", true);
 
-                                EnviarParaServidor("ALARM_FORWARD", sensorId, tipoDado, parts[3], timestamp);
+                                if (!emCooldown)
+                                {
+                                    RegistarLogEsquerda(
+                                        $"EDGE ANALYTICS: Anomalia em {sensorId}! ({tipoDado} = {valor}{un} @ {zona})", true);
+
+                                    bool temVideo;
+                                    lock (fileLock)
+                                    {
+                                        temVideo = _sensoresCache.TryGetValue(sensorId, out var sc) && sc.VideoStream;
+                                    }
+                                    if (temVideo)
+                                        RegistarLogEsquerda($"[VIDEO] {sensorId} tem capacidade de streaming.", true);
+
+                                    EnviarParaServidor("ALARM_FORWARD", sensorId, tipoDado, parts[3], timestamp);
+                                }
                             }
                             else
                             {
