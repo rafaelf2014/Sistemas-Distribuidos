@@ -5,6 +5,8 @@ import AlarmLog   from "./components/AlarmLog";
 import Analise    from "./components/Analise";
 import "./App.css";
 
+const BASE = "http://localhost:8080";
+
 type Tab = "sensores" | "dados" | "alarmes" | "analise";
 
 const TABS: { id: Tab; label: string }[] = [
@@ -16,6 +18,11 @@ const TABS: { id: Tab; label: string }[] = [
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("sensores");
+
+  async function handleShutdown() {
+    if (!confirm("Desligar o servidor?")) return;
+    await fetch(`${BASE}/api/shutdown`).catch(() => {});
+  }
 
   return (
     <div className="app">
@@ -45,6 +52,10 @@ export default function App() {
         {tab === "alarmes"  && <AlarmLog   />}
         {tab === "analise"  && <Analise    />}
       </main>
+
+      <button className="shutdown-btn" onClick={handleShutdown} title="Desligar servidor">
+        ⏻
+      </button>
     </div>
   );
 }

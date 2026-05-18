@@ -16,18 +16,14 @@ partial class ServerCentral
         string GatewayId, string SensorId, string Zona,
         string TipoDado, string Valor, string Timestamp, bool IsAlarm);
 
-    // Limite de 1000
     private static readonly BlockingCollection<DataRecord> _filaEscrita = new(1000);
-    private static Thread _threadConsumidor;
+    private static Thread _threadConsumidor = null!;
 
     private static readonly string dbPath           = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, @"..\..\..\ServerData.db"));
     private static readonly string connectionString = $"Data Source={dbPath}";
-    static TcpListener _server = null;
+    static TcpListener? _server = null;
 
-    // Sensores com video
     private static readonly ConcurrentDictionary<string, (string GatewayId, string Zona, string Tipos)> _sensoresStream = new();
-
-    // Estado de cada sensor reportado pelo gateway
     private static readonly ConcurrentDictionary<string, string> _sensoresStatus = new();
 
     #endregion
@@ -39,14 +35,12 @@ partial class ServerCentral
         Console.CancelKeyPress += new ConsoleCancelEventHandler(TratarEncerramento);
         InicializarBaseDeDados();
 
-        // Ler fila
         _threadConsumidor = new Thread(ConsumidorBaseDeDados)
         {
             IsBackground = true,
             Name = "DB-Writer"
         };
         _threadConsumidor.Start();
-        IniciarTecladoThread();
         IniciarApi();
 
         try
@@ -98,7 +92,7 @@ partial class ServerCentral
                 string[] partes = linha.Split('|');
                 for (int i = 0; i < partes.Length; i++) { partes[i] = partes[i].Trim(); }
 
-                // Track which IP belongs to each gateway (needed to open reverse stream connection)
+                // IP do gateway necessário para a ligação de stream reverso
                 if (partes.Length >= 2 && !string.IsNullOrEmpty(partes[1]))
                     _gatewayIps[partes[1]] = gatewayIp;
 
@@ -107,10 +101,8 @@ partial class ServerCentral
                     bool isAlarm = partes[0] == "ALARM_FORWARD";
                     var registo  = new DataRecord(partes[1], partes[2], partes[3], partes[4], partes[5], partes[6], isAlarm);
 
-                    // tenta de 5 em 5
                     if (_filaEscrita.TryAdd(registo, TimeSpan.FromSeconds(5)))
                     {
-                        // Enviar resposta
                         writer.WriteLine("ACK_FORWARDDATA|STATUS OK");
                         if (isAlarm) RegistarLog($"[{partes[3]}] ANOMALIA! Sensor: {partes[2]} | {partes[4]} = {partes[5]}", true);
                         else         RegistarLog($"[{partes[3]}] {partes[2]} -> {partes[4]} = {partes[5]}");
@@ -123,7 +115,6 @@ partial class ServerCentral
                 }
                 else if (partes.Length == 6 && partes[0] == "SENSOR_REG")
                 {
-                    // SENSOR_REG|gatewayId|sensorId|zona|tipos|true/false
                     bool videoCapable = partes[5].Equals("true", StringComparison.OrdinalIgnoreCase);
                     if (videoCapable)
                         _sensoresStream[partes[2]] = (partes[1], partes[3], partes[4]);
@@ -134,7 +125,6 @@ partial class ServerCentral
                 }
                 else if (partes.Length == 4 && partes[0] == "SENSOR_STATUS")
                 {
-                    // SENSOR_STATUS|gatewayId|sensorId|estado
                     _sensoresStatus[partes[2]] = partes[3];
                     writer.WriteLine("ACK_SENSOR_STATUS|OK");
                     RegistarLog($"Status: {partes[2]} → {partes[3]}");

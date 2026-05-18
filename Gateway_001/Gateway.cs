@@ -17,13 +17,10 @@ using PreProcessamento;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
 
-// ==========================================
-// JSON configs
-// ==========================================
 class AgregacaoConfig
 {
-    [JsonPropertyName("tipo")]        public string Tipo        { get; set; }
-    [JsonPropertyName("unidade")]     public string Unidade     { get; set; }
+    [JsonPropertyName("tipo")]        public string Tipo        { get; set; } = "";
+    [JsonPropertyName("unidade")]     public string Unidade     { get; set; } = "";
     [JsonPropertyName("intervaloMs")] public int    IntervaloMs { get; set; }
 }
 
@@ -39,12 +36,12 @@ class ConfigGateway
 
 class SensorEntry
 {
-    [JsonPropertyName("id")]          public string Id          { get; set; }
-    [JsonPropertyName("status")]      public string Status      { get; set; }
-    [JsonPropertyName("zona")]        public string Zona        { get; set; }
-    [JsonPropertyName("tipos")]       public string Tipos       { get; set; }
+    [JsonPropertyName("id")]          public string Id          { get; set; } = "";
+    [JsonPropertyName("status")]      public string Status      { get; set; } = "";
+    [JsonPropertyName("zona")]        public string Zona        { get; set; } = "";
+    [JsonPropertyName("tipos")]       public string Tipos       { get; set; } = "";
     [JsonPropertyName("videoStream")] public bool   VideoStream { get; set; }
-    [JsonPropertyName("lastSync")]    public string LastSync    { get; set; }
+    [JsonPropertyName("lastSync")]    public string LastSync    { get; set; } = "";
 }
 
 partial class MyTcpListener
@@ -70,12 +67,11 @@ partial class MyTcpListener
     static readonly JsonSerializerOptions _jsonRead  = new() { PropertyNameCaseInsensitive = true };
     static readonly JsonSerializerOptions _jsonWrite = new() { WriteIndented = true };
 
-    // è melhor usar cache pra evitar problemas de performance e concorrência
     static readonly Dictionary<string, (string Status, string Zona, string Tipos, bool VideoStream, DateTime LastSync)>
         _sensoresCache = new();
 
     static readonly List<Timer> _timersAgregacao = new();
-    static          Timer       _timerWatchdog;
+    static          Timer?      _timerWatchdog;
 
     static readonly Dictionary<string, DateTime> _ultimoAlarme = new();
     static readonly object                        _alarmeCooldownLock = new();
@@ -323,6 +319,7 @@ partial class MyTcpListener
             PersistirCacheParaJson();
             RegistarLogEsquerda(novo ? $"Config: Novo sensor {id} registado." : $"Config: Sensor {id} atualizado.");
         }
+        NotificarServidorStatus(id, "ativo");
     }
 
     static bool ValidarSensor(string id, string tipoDados)
@@ -365,7 +362,7 @@ partial class MyTcpListener
             w.WriteLine($"SENSOR_STATUS|{_gatewayId}|{sensorId}|{estado}");
             r.ReadLine();
         }
-        catch { /* servidor pode estar offline — sem problema, o próximo HELLO correge */ }
+        catch { /* servidor offline — o sensor reenvia HELLO ao reconectar */ }
     }
 
     static string ObterZonaDoSensor(string id)
@@ -376,7 +373,7 @@ partial class MyTcpListener
         }
     }
 
-    static void VerificarSensoresPerdidos(object sender, ElapsedEventArgs e)
+    static void VerificarSensoresPerdidos(object? sender, ElapsedEventArgs e)
     {
         var perdidos = new List<string>();
         lock (fileLock)
@@ -622,9 +619,9 @@ partial class MyTcpListener
             string zona = ObterZonaDoSensor(sensorId);
             w.WriteLine($"{tipo}|{_gatewayId}|{sensorId}|{zona}|{tipoDado}|{valor}|{timestamp}");
 
-            string resposta = r.ReadLine();
+            string? resposta = r.ReadLine();
             string tag = tipo == "ALARM_FORWARD" ? "[ALARM]" : "[DATA]";
-            string un  = _unidadesMedida.TryGetValue(tipoDado, out string u) ? u : "";
+            string un  = _unidadesMedida.TryGetValue(tipoDado, out string? u) ? u : "";
             RegistarLogDireita($"ENVIADO: {tag} {sensorId} ({tipoDado}={valor}{un})", $"RESPOSTA: {resposta}");
 
             return resposta != null && resposta.Contains("STATUS OK");
@@ -636,7 +633,6 @@ partial class MyTcpListener
         }
     }
 
-    // Diz ao server que sensor é e se tem video
     static void EnviarRegistoSensorParaServidor(string sensorId, string zona, string tipos, bool videoCapable)
     {
         try
@@ -647,7 +643,7 @@ partial class MyTcpListener
             using StreamWriter w = new StreamWriter(s) { AutoFlush = true };
 
             w.WriteLine($"SENSOR_REG|{_gatewayId}|{sensorId}|{zona}|{tipos}|{(videoCapable ? "true" : "false")}");
-            r.ReadLine(); // consume ACK
+            r.ReadLine();
         }
         catch { /* Server may not be running yet; sensor will re-HELLO on reconnect */ }
     }
@@ -656,7 +652,7 @@ partial class MyTcpListener
 
     #region ENCERRAMENTO
 
-    static void TratarEncerramento(object sender, ConsoleCancelEventArgs args)
+    static void TratarEncerramento(object? sender, ConsoleCancelEventArgs args)
     {
         args.Cancel = true;
         _isOnline = false;

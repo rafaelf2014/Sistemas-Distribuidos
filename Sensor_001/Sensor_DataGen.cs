@@ -57,7 +57,7 @@ namespace sensor
             if (!_ondas.ContainsKey(tipo)) _ondas[tipo] = new AnomaliaOnda();
             var onda = _ondas[tipo];
 
-            // 5% chance to start anomaly wave when none is active
+            // 5% de probabilidade de iniciar onda de anomalia
             if (!onda.Ativa && _rng.Next(100) < 5)
             {
                 onda.Ativa       = true;
@@ -71,7 +71,7 @@ namespace sensor
 
             if (onda.Ativa)
             {
-                // Sine half-wave: rises from 0, peaks at midpoint, falls back to 0
+                // meia-onda sinusoidal: sobe ao pico e desce a 0
                 extra = onda.Pico * Math.Sin(Math.PI * onda.Passo / onda.TotalPassos);
                 onda.Passo++;
                 if (onda.Passo >= onda.TotalPassos) onda.Ativa = false;

@@ -20,7 +20,7 @@ namespace sensor
 
     class LeituraConfig
     {
-        [JsonPropertyName("tipo")]        public string Tipo        { get; set; }
+        [JsonPropertyName("tipo")]        public string Tipo        { get; set; } = "";
         [JsonPropertyName("intervaloMs")] public int    IntervaloMs { get; set; }
     }
 
@@ -35,7 +35,7 @@ namespace sensor
 
     class SensorConfig
     {
-        public string TipoDado    { get; set; }
+        public string TipoDado    { get; set; } = "";
         public int    IntervaloMs { get; set; }
     }
 
@@ -54,7 +54,7 @@ namespace sensor
         static IConnection? _connection;
         static IChannel?    _channel;
 
-        static Timer _timerHeartbeat;
+        static Timer? _timerHeartbeat;
         static readonly List<Timer> _timersDados        = new();
         static readonly int         _intervaloHeartbeat = 5000;
 
@@ -176,7 +176,7 @@ namespace sensor
 
         #region BROKER
 
-        static void EnviarHeartbeatAutomatico(object sender, ElapsedEventArgs e)
+        static void EnviarHeartbeatAutomatico(object? sender, ElapsedEventArgs e)
         {
             if (!_isOnline) return;
             Publicar($"HEARTBEAT|{_idSensor}", $"{_zona}.CONTROL");
@@ -335,7 +335,7 @@ namespace sensor
 
         #region ENCERRAMENTO
 
-        static void TratarEncerramento(object sender, ConsoleCancelEventArgs args)
+        static void TratarEncerramento(object? sender, ConsoleCancelEventArgs args)
         {
             args.Cancel = true;
             _encerrando = true;

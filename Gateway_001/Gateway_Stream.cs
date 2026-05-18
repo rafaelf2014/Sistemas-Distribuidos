@@ -16,6 +16,9 @@ partial class MyTcpListener
         listener.Start();
         RegistarLogEsquerda("Listener de comandos do servidor na porta 14001.");
 
+        // Aguarda ligação ao broker antes de aceitar comandos
+        while (!_isOnline) Thread.Sleep(100);
+
         while (_isOnline)
         {
             try
@@ -35,7 +38,7 @@ partial class MyTcpListener
             using var reader = new StreamReader(stream);
             using var writer = new StreamWriter(stream) { AutoFlush = true };
 
-            string linha = reader.ReadLine();
+            string? linha = reader.ReadLine();
             if (linha == null) return;
 
             string[] p = linha.Split('|');
@@ -64,7 +67,6 @@ partial class MyTcpListener
         try
         {
             var body = Encoding.UTF8.GetBytes(comando);
-            // Publica na queue directa do sensor (default exchange, routing key = nome da queue)
             _amqpChannel.BasicPublishAsync("", $"commands.{sensorId}", body).GetAwaiter().GetResult();
             RegistarLogEsquerda($"[CMD] → {sensorId}: {comando}");
         }

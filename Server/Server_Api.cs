@@ -94,13 +94,17 @@ partial class ServerCentral
 
             string json = path switch
             {
-                "/api/sensores"  => HandleSensores(),
-                "/api/dados"     => HandleDados(query),
-                "/api/alarmes"   => HandleAlarmes(query),
-                "/api/analise"   => HandleAnalise(query).GetAwaiter().GetResult(),
-                "/api/padroes"   => HandlePadroes(query).GetAwaiter().GetResult(),
-                "/api/previsao"  => HandlePrevisao(query).GetAwaiter().GetResult(),
-                _                => JsonSerializer.Serialize(new { erro = "Endpoint não encontrado." }, _jsonOpts)
+                "/api/sensores"      => HandleSensores(),
+                "/api/dados"         => HandleDados(query),
+                "/api/alarmes"       => HandleAlarmes(query),
+                "/api/analise"       => HandleAnalise(query).GetAwaiter().GetResult(),
+                "/api/padroes"       => HandlePadroes(query).GetAwaiter().GetResult(),
+                "/api/previsao"      => HandlePrevisao(query).GetAwaiter().GetResult(),
+                "/api/stream/start"  => HandleStreamStart(query),
+                "/api/stream/stop"   => HandleStreamStop(query),
+                "/api/stream/estado" => HandleStreamEstado(),
+                "/api/shutdown"      => HandleShutdown(),
+                _                    => JsonSerializer.Serialize(new { erro = "Endpoint não encontrado." }, _jsonOpts)
             };
 
             byte[] buf = Encoding.UTF8.GetBytes(json);
@@ -328,5 +332,61 @@ partial class ServerCentral
         {
             return JsonSerializer.Serialize(new { erro = ex.Status.Detail }, _jsonOpts);
         }
+    }
+
+    // GET /api/shutdown
+    static string HandleShutdown()
+    {
+        RegistarLog("[API] Shutdown solicitado pelo frontend.");
+        Task.Delay(200).ContinueWith(_ =>
+        {
+            _isOnline = false;
+            _server?.Stop();
+            _filaEscrita.CompleteAdding();
+            _threadConsumidor.Join(TimeSpan.FromSeconds(5));
+            Environment.Exit(0);
+        });
+        return JsonSerializer.Serialize(new { ok = true }, _jsonOpts);
+    }
+
+    // GET /api/stream/start?sensor=
+    static string HandleStreamStart(System.Collections.Specialized.NameValueCollection q)
+    {
+        string sensorId = q["sensor"] ?? "";
+        if (string.IsNullOrEmpty(sensorId))
+            return JsonSerializer.Serialize(new { erro = "Parâmetro 'sensor' obrigatório." }, _jsonOpts);
+
+        if (_streamingAtivo)
+            return JsonSerializer.Serialize(new { erro = $"Stream já activo para {_streamingSensorId}." }, _jsonOpts);
+
+        if (!_sensoresStream.TryGetValue(sensorId, out var info))
+            return JsonSerializer.Serialize(new { erro = $"Sensor {sensorId} não registado como video-capable." }, _jsonOpts);
+
+        if (!_gatewayIps.TryGetValue(info.GatewayId, out string gwIp))
+            return JsonSerializer.Serialize(new { erro = $"IP do gateway {info.GatewayId} desconhecido." }, _jsonOpts);
+
+        IniciarStream(sensorId);
+        if (!_streamingAtivo)
+            return JsonSerializer.Serialize(new { erro = "Falha ao iniciar stream — ver logs do servidor." }, _jsonOpts);
+        return JsonSerializer.Serialize(new { ok = true, sensor = sensorId, gateway = info.GatewayId, gwIp }, _jsonOpts);
+    }
+
+    // GET /api/stream/stop?sensor=
+    static string HandleStreamStop(System.Collections.Specialized.NameValueCollection q)
+    {
+        PararStream();
+        return JsonSerializer.Serialize(new { ok = true }, _jsonOpts);
+    }
+
+    // GET /api/stream/estado — debug: what does the server know about streams?
+    static string HandleStreamEstado()
+    {
+        return JsonSerializer.Serialize(new
+        {
+            streamingAtivo    = _streamingAtivo,
+            streamingSensorId = _streamingSensorId,
+            sensoresStream    = _sensoresStream.Select(kv => new { sensorId = kv.Key, kv.Value.GatewayId, kv.Value.Zona }).ToList(),
+            gatewayIps        = _gatewayIps.Select(kv => new { gatewayId = kv.Key, ip = kv.Value }).ToList()
+        }, _jsonOpts);
     }
 }

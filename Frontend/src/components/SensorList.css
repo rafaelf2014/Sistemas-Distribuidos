@@ -1,3 +1,32 @@
+.sensor-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.sensor-count {
+  font-size: 0.85rem;
+  color: #555;
+}
+
+.toggle-btn {
+  background: #1a1a2e;
+  border: 1px solid #2a2a4a;
+  color: #888;
+  padding: 0.35rem 0.9rem;
+  border-radius: 6px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.toggle-btn.active {
+  border-color: #00d4ff44;
+  color: #00d4ff;
+  background: #0d2d44;
+}
+
 .sensor-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
@@ -12,43 +41,72 @@
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+  transition: border-color 0.2s;
 }
+.sensor-card.ativo      { border-color: #1a3a2a; }
+.sensor-card.manutencao { border-color: #3a2a0a; }
+.sensor-card.desativado { border-color: #3a1a1a; }
 
+/* Header row */
 .sensor-header {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.4rem;
 }
 
 .sensor-id {
-  font-size: 1.1rem;
+  font-size: 1.05rem;
   font-weight: 700;
   color: #00d4ff;
 }
 
+.spacer { flex: 1; }
+
+/* Badges */
+.badge {
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.badge.tipo    { background: #0d2d44; color: #4fc3f7; }
+.badge.alarme  { background: #3a1a00; color: #ffb300; }
+
+.badge.video {
+  background: #2d0d44;
+  color: #ce93d8;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.badge.video:hover    { background: #4a1a66; color: #f3b8ff; }
+.badge.video.streaming {
+  background: #1a0d44;
+  color: #ff5252;
+  animation: pulse 1.2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.6; }
+}
+
+/* Zona */
 .sensor-zona {
-  font-size: 0.85rem;
-  color: #888;
+  font-size: 0.8rem;
+  color: #666;
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
 
+/* Tipos */
 .sensor-tipos {
   display: flex;
   flex-wrap: wrap;
   gap: 0.3rem;
 }
 
-.badge {
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-size: 0.75rem;
-  font-weight: 600;
-}
-
-.badge.tipo  { background: #0d2d44; color: #4fc3f7; }
-.badge.video { background: #2d0d44; color: #ce93d8; }
-
+/* Footer */
 .sensor-footer {
   display: flex;
   justify-content: space-between;
@@ -57,7 +115,7 @@
 }
 
 .estado {
-  font-size: 0.75rem;
+  font-size: 0.72rem;
   font-weight: 700;
   padding: 2px 8px;
   border-radius: 4px;
@@ -68,13 +126,8 @@
 .estado.desconhecido { background: #1a1a1a; color: #555;    }
 
 .ultima {
-  font-size: 0.7rem;
-  color: #555;
-}
-
-.sensor-alarmes {
   font-size: 0.78rem;
-  color: #ffb300;
+  color: #aaa;
 }
 
 .vazio { color: #555; }
