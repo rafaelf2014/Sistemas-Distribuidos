@@ -29,6 +29,7 @@ namespace sensor
         [JsonPropertyName("sensorId")]     public string              SensorId     { get; set; } = "S???";
         [JsonPropertyName("zona")]         public string              Zona         { get; set; } = "DESCONHECIDA";
         [JsonPropertyName("videoStream")]  public bool                VideoStream  { get; set; } = false;
+        [JsonPropertyName("zonaType")]     public string              ZonaType     { get; set; } = "residencial";
         [JsonPropertyName("rabbitMqHost")] public string              RabbitMqHost { get; set; } = "localhost";
         [JsonPropertyName("leituras")]     public List<LeituraConfig> Leituras     { get; set; } = new();
     }
@@ -67,6 +68,9 @@ namespace sensor
         private static bool   _isOnline    = false;
         private static bool   _encerrando  = false;
         private static string _brokerLabel = "";
+        private static string _zonaType    = "residencial";
+
+        private static readonly System.Text.StringBuilder _debugInput = new();
 
         private static volatile bool _streamingAtivo = false;
         private static Thread?       _threadStream   = null;
@@ -84,6 +88,7 @@ namespace sensor
             List<SensorConfig> configs = CarregarConfiguracoes();
             DesenharDashboard();
             ConfigurarTemporizadores(configs);
+            IniciarMenuDebug();
 
             while (!_encerrando)
             {
@@ -145,6 +150,7 @@ namespace sensor
             _idSensor    = cfg.SensorId;
             _zona        = cfg.Zona;
             _videoStream = cfg.VideoStream;
+            _zonaType    = cfg.ZonaType;
             _brokerHost  = cfg.RabbitMqHost;
             _dataTypes   = string.Join(",", cfg.Leituras.ConvertAll(l => l.Tipo.ToUpper()));
 
@@ -273,7 +279,7 @@ namespace sensor
         {
             _isOnline    = status;
             _brokerLabel = descricao;
-            DesenharDashboard();
+            lock (_consoleLock) { DesenharDashboard(); }
         }
 
         static void RegistarLog(string mensagem)
@@ -328,7 +334,12 @@ namespace sensor
             Console.WriteLine(new string(' ', 110));
             Console.WriteLine(sep);
             Console.ResetColor();
-            Console.WriteLine(" Pressione Ctrl+C para desligar.".PadRight(110));
+            Console.WriteLine(" Ctrl+C para sair  |  Comandos: evento <tipo> [0.1-2.0],  limpar,  status,  help".PadRight(110));
+            Console.ForegroundColor = ConsoleColor.DarkCyan;
+            Console.Write("  CMD> ");
+            Console.ForegroundColor = ConsoleColor.White;
+            Console.WriteLine(_debugInput.ToString().PadRight(103));
+            Console.ResetColor();
         }
 
         #endregion

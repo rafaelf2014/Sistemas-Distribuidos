@@ -11,7 +11,7 @@ partial class ServerCentral
 
     static readonly ConcurrentDictionary<string, string> _gatewayIps = new();
 
-    static string        _streamingSensorId = null;
+    static volatile string _streamingSensorId = null;
     static volatile bool _streamingAtivo    = false;
     static readonly int  _udpStreamPort     = 15000;
 
@@ -19,7 +19,7 @@ partial class ServerCentral
 
     #region GESTÃO DE STREAM
 
-    static void IniciarStream(string sensorId)
+    static async Task IniciarStream(string sensorId)
     {
         if (_streamingAtivo) { RegistarLog("Já existe um stream ativo."); return; }
         if (!_sensoresStream.TryGetValue(sensorId, out var info)) return;
@@ -30,13 +30,14 @@ partial class ServerCentral
 
         try
         {
-            using var tcp = new TcpClient(gwIp, 14001);
+            using var tcp = new TcpClient();
+            await tcp.ConnectAsync(gwIp, 14001);
             using var s   = tcp.GetStream();
             using var r   = new StreamReader(s);
             using var w   = new StreamWriter(s) { AutoFlush = true };
 
-            w.WriteLine($"REQUEST_STREAM|{sensorId}|{ObterIpLocal()}|{_udpStreamPort}");
-            string ack = r.ReadLine();
+            await w.WriteLineAsync($"REQUEST_STREAM|{sensorId}|{ObterIpLocal()}|{_udpStreamPort}");
+            string ack = await r.ReadLineAsync();
 
             if (ack?.Contains("OK") == true)
             {
@@ -90,6 +91,7 @@ partial class ServerCentral
                 try
                 {
                     byte[] dados = udp.Receive(ref remoteEp);
+                    if (dados.Length < 100 || dados.Length > 65000) continue;
                     using Mat frame = Cv2.ImDecode(dados, ImreadModes.Color);
                     if (!frame.Empty())
                     {
@@ -110,6 +112,9 @@ partial class ServerCentral
 
     static string ObterIpLocal()
     {
+        string? configured = Environment.GetEnvironmentVariable("SERVER_IP");
+        if (!string.IsNullOrEmpty(configured)) return configured;
+
         try
         {
             using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);

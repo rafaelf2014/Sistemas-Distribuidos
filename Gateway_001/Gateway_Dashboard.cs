@@ -33,7 +33,6 @@ partial class MyTcpListener
                 _logsEsquerda.Insert(0, linha);
                 if (_logsEsquerda.Count > 10) _logsEsquerda.RemoveAt(10);
             }
-            DesenharDashboard();
         }
     }
 
@@ -45,7 +44,6 @@ partial class MyTcpListener
             _logsDireita.Insert(0, $"   └─> {msgResposta}");
             _logsDireita.Insert(0, $"[{t}] {msgEnvio}");
             while (_logsDireita.Count > 20) _logsDireita.RemoveAt(_logsDireita.Count - 1);
-            DesenharDashboard();
         }
     }
 

@@ -1,5 +1,4 @@
 using System;
-using System.IO;
 using System.Net;
 using System.Text;
 using System.Text.Json;
@@ -9,14 +8,14 @@ using System.Collections.Generic;
 using System.Globalization;
 using Grpc.Net.Client;
 using ServicoAnalise;
-using Microsoft.Data.Sqlite;
+using Npgsql;
 
 // ==========================================
 // REST API (porta 8080) + cliente gRPC para ServicoAnalise
 // ==========================================
 partial class ServerCentral
 {
-    private static readonly string _analiseUrl = "http://localhost:50052";
+    private static readonly string _analiseUrl = Environment.GetEnvironmentVariable("ANALISE_URL") ?? "http://localhost:50052";
     private static AnaliseService.AnaliseServiceClient? _analiseClient;
 
     private static readonly JsonSerializerOptions _jsonOpts = new()
@@ -60,7 +59,7 @@ partial class ServerCentral
             try
             {
                 var ctx = listener.GetContext();
-                ThreadPool.QueueUserWorkItem(_ => HandleRequest(ctx));
+                _ = Task.Run(() => HandleRequestAsync(ctx));
             }
             catch (HttpListenerException) { break; }
             catch { }
@@ -69,7 +68,7 @@ partial class ServerCentral
         listener.Stop();
     }
 
-    static void HandleRequest(HttpListenerContext ctx)
+    static async Task HandleRequestAsync(HttpListenerContext ctx)
     {
         var req = ctx.Request;
         var res = ctx.Response;
@@ -94,13 +93,13 @@ partial class ServerCentral
 
             string json = path switch
             {
-                "/api/sensores"      => HandleSensores(),
-                "/api/dados"         => HandleDados(query),
-                "/api/alarmes"       => HandleAlarmes(query),
-                "/api/analise"       => HandleAnalise(query).GetAwaiter().GetResult(),
-                "/api/padroes"       => HandlePadroes(query).GetAwaiter().GetResult(),
-                "/api/previsao"      => HandlePrevisao(query).GetAwaiter().GetResult(),
-                "/api/stream/start"  => HandleStreamStart(query),
+                "/api/sensores"      => await HandleSensores(),
+                "/api/dados"         => await HandleDados(query),
+                "/api/alarmes"       => await HandleAlarmes(query),
+                "/api/analise"       => await HandleAnalise(query),
+                "/api/padroes"       => await HandlePadroes(query),
+                "/api/previsao"      => await HandlePrevisao(query),
+                "/api/stream/start"  => await HandleStreamStart(query),
                 "/api/stream/stop"   => HandleStreamStop(query),
                 "/api/stream/estado" => HandleStreamEstado(),
                 "/api/shutdown"      => HandleShutdown(),
@@ -120,36 +119,35 @@ partial class ServerCentral
         finally { res.Close(); }
     }
 
-    // GET /api/sensores — distinct sensors seen in the DB + stream-capable list
-    static string HandleSensores()
+    // GET /api/sensores — sensors from the sensores table + alarm count from leituras
+    static async Task<string> HandleSensores()
     {
         var lista = new List<object>();
-        using var conn = new SqliteConnection(connectionString);
-        conn.Open();
+        using var conn = new NpgsqlConnection(connectionString);
+        await conn.OpenAsync();
 
-        var cmd = conn.CreateCommand();
+        using var cmd = conn.CreateCommand();
         cmd.CommandText = @"
-            SELECT SensorId, Zona, GROUP_CONCAT(DISTINCT TipoDado) AS Tipos,
-                   MAX(Timestamp) AS UltimaLeitura,
-                   SUM(CASE WHEN IsAlarm=1 THEN 1 ELSE 0 END) AS TotalAlarmes
-            FROM Dados
-            GROUP BY SensorId, Zona
-            ORDER BY SensorId";
+            SELECT s.sensor_id, s.zona, s.tipos, s.video_stream, s.status, s.ultima_sync,
+                   COUNT(l.id) FILTER (WHERE l.is_alarm) AS total_alarmes
+            FROM sensores s
+            LEFT JOIN leituras l ON l.sensor_id = s.sensor_id
+            GROUP BY s.sensor_id, s.zona, s.tipos, s.video_stream, s.status, s.ultima_sync
+            ORDER BY s.sensor_id";
 
-        using var reader = cmd.ExecuteReader();
-        while (reader.Read())
+        using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
         {
-            string sId    = reader.GetString(0);
-            string status = _sensoresStatus.TryGetValue(sId, out var st) ? st : "desconhecido";
+            string sId = reader.GetString(0);
             lista.Add(new
             {
                 sensorId      = sId,
                 zona          = reader.GetString(1),
-                tipos         = reader.GetString(2),
-                ultimaLeitura = reader.IsDBNull(3) ? "" : reader.GetString(3),
-                totalAlarmes  = reader.GetInt32(4),
-                videoStream   = _sensoresStream.ContainsKey(sId),
-                status
+                tipos         = reader.IsDBNull(2) ? "" : reader.GetString(2),
+                videoStream   = reader.GetBoolean(3),
+                status        = reader.IsDBNull(4) ? "desconhecido" : reader.GetString(4),
+                ultimaLeitura = reader.IsDBNull(5) ? "" : reader.GetDateTime(5).ToString("yyyy-MM-dd HH:mm:ss"),
+                totalAlarmes  = reader.IsDBNull(6) ? 0 : (int)reader.GetInt64(6)
             });
         }
 
@@ -157,75 +155,78 @@ partial class ServerCentral
     }
 
     // GET /api/dados?zona=&tipo=&sensor=&inicio=&fim=&limite=100
-    static string HandleDados(System.Collections.Specialized.NameValueCollection q)
+    static async Task<string> HandleDados(System.Collections.Specialized.NameValueCollection q)
     {
-        string zona    = q["zona"]   ?? "";
-        string tipo    = q["tipo"]   ?? "";
-        string sensor  = q["sensor"] ?? "";
-        string inicio  = q["inicio"] ?? "";
-        string fim     = q["fim"]    ?? "";
-        int    limite  = int.TryParse(q["limite"], out int l) ? Math.Min(l, 5000) : 200;
+        string zona   = q["zona"]   ?? "";
+        string tipo   = q["tipo"]   ?? "";
+        string sensor = q["sensor"] ?? "";
+        string inicio = q["inicio"] ?? "";
+        string fim    = q["fim"]    ?? "";
+        int    limite = int.TryParse(q["limite"], out int l) ? Math.Min(l, 5000) : 200;
 
         var rows = new List<object>();
-        using var conn = new SqliteConnection(connectionString);
-        conn.Open();
+        using var conn = new NpgsqlConnection(connectionString);
+        await conn.OpenAsync();
 
-        string sql = "SELECT GatewayId, SensorId, Zona, TipoDado, Valor, Timestamp, IsAlarm FROM Dados WHERE 1=1";
-        var cmd = conn.CreateCommand();
-        if (!string.IsNullOrEmpty(zona))   { sql += " AND Zona=@zona";   cmd.Parameters.AddWithValue("@zona",   zona); }
-        if (!string.IsNullOrEmpty(tipo))   { sql += " AND TipoDado=@tipo"; cmd.Parameters.AddWithValue("@tipo", tipo); }
-        if (!string.IsNullOrEmpty(sensor)) { sql += " AND SensorId=@sensor"; cmd.Parameters.AddWithValue("@sensor", sensor); }
-        if (!string.IsNullOrEmpty(inicio)) { sql += " AND Timestamp>=@inicio"; cmd.Parameters.AddWithValue("@inicio", inicio); }
-        if (!string.IsNullOrEmpty(fim))    { sql += " AND Timestamp<=@fim";    cmd.Parameters.AddWithValue("@fim",    fim); }
+        string sql = "SELECT gateway_id, sensor_id, zona, tipo_dado, valor, timestamp, is_alarm, qualidade FROM leituras WHERE 1=1";
+        using var cmd = conn.CreateCommand();
+        if (!string.IsNullOrEmpty(zona))   { sql += " AND zona=@zona";       cmd.Parameters.AddWithValue("@zona",   zona); }
+        if (!string.IsNullOrEmpty(tipo))   { sql += " AND tipo_dado=@tipo";  cmd.Parameters.AddWithValue("@tipo",   tipo); }
+        if (!string.IsNullOrEmpty(sensor)) { sql += " AND sensor_id=@sensor"; cmd.Parameters.AddWithValue("@sensor", sensor); }
+        if (!string.IsNullOrEmpty(inicio) && DateTime.TryParse(inicio, out DateTime dtInicio))
+            { sql += " AND timestamp>=@inicio"; cmd.Parameters.AddWithValue("@inicio", dtInicio); }
+        if (!string.IsNullOrEmpty(fim) && DateTime.TryParse(fim, out DateTime dtFim))
+            { sql += " AND timestamp<=@fim";    cmd.Parameters.AddWithValue("@fim",    dtFim); }
 
-        sql += $" ORDER BY Id DESC LIMIT {limite}";
+        sql += $" ORDER BY id DESC LIMIT {limite}";
         cmd.CommandText = sql;
 
-        using var reader = cmd.ExecuteReader();
-        while (reader.Read())
+        using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
             rows.Add(new
             {
-                gatewayId = reader.GetString(0),
-                sensorId  = reader.GetString(1),
-                zona      = reader.GetString(2),
-                tipoDado  = reader.GetString(3),
-                valor     = reader.GetString(4),
-                timestamp = reader.GetString(5),
-                isAlarm   = reader.GetInt32(6) == 1
+                gatewayId = reader.IsDBNull(0) ? "" : reader.GetString(0),
+                sensorId  = reader.IsDBNull(1) ? "" : reader.GetString(1),
+                zona      = reader.IsDBNull(2) ? "" : reader.GetString(2),
+                tipoDado  = reader.IsDBNull(3) ? "" : reader.GetString(3),
+                valor     = reader.IsDBNull(4) ? "0" : reader.GetDecimal(4).ToString(CultureInfo.InvariantCulture),
+                timestamp = reader.IsDBNull(5) ? "" : reader.GetDateTime(5).ToString("yyyy-MM-dd HH:mm:ss"),
+                isAlarm   = !reader.IsDBNull(6) && reader.GetBoolean(6),
+                qualidade = reader.IsDBNull(7) ? 1.0f : reader.GetFloat(7)
             });
 
         return JsonSerializer.Serialize(rows, _jsonOpts);
     }
 
     // GET /api/alarmes?zona=&tipo=&limite=50
-    static string HandleAlarmes(System.Collections.Specialized.NameValueCollection q)
+    static async Task<string> HandleAlarmes(System.Collections.Specialized.NameValueCollection q)
     {
         string zona  = q["zona"] ?? "";
         string tipo  = q["tipo"] ?? "";
         int    limite = int.TryParse(q["limite"], out int l) ? Math.Min(l, 1000) : 50;
 
         var rows = new List<object>();
-        using var conn = new SqliteConnection(connectionString);
-        conn.Open();
+        using var conn = new NpgsqlConnection(connectionString);
+        await conn.OpenAsync();
 
-        string sql = "SELECT GatewayId, SensorId, Zona, TipoDado, Valor, Timestamp FROM Dados WHERE IsAlarm=1";
-        var cmd = conn.CreateCommand();
-        if (!string.IsNullOrEmpty(zona)) { sql += " AND Zona=@zona";   cmd.Parameters.AddWithValue("@zona", zona); }
-        if (!string.IsNullOrEmpty(tipo)) { sql += " AND TipoDado=@tipo"; cmd.Parameters.AddWithValue("@tipo", tipo); }
+        string sql = "SELECT gateway_id, sensor_id, zona, tipo_dado, valor, timestamp FROM leituras WHERE is_alarm = TRUE";
+        using var cmd = conn.CreateCommand();
+        if (!string.IsNullOrEmpty(zona)) { sql += " AND zona=@zona";      cmd.Parameters.AddWithValue("@zona", zona); }
+        if (!string.IsNullOrEmpty(tipo)) { sql += " AND tipo_dado=@tipo"; cmd.Parameters.AddWithValue("@tipo", tipo); }
 
-        sql += $" ORDER BY Id DESC LIMIT {limite}";
+        sql += $" ORDER BY id DESC LIMIT {limite}";
         cmd.CommandText = sql;
 
-        using var reader = cmd.ExecuteReader();
-        while (reader.Read())
+        using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
             rows.Add(new
             {
-                gatewayId = reader.GetString(0),
-                sensorId  = reader.GetString(1),
-                zona      = reader.GetString(2),
-                tipoDado  = reader.GetString(3),
-                valor     = reader.GetString(4),
-                timestamp = reader.GetString(5)
+                gatewayId = reader.IsDBNull(0) ? "" : reader.GetString(0),
+                sensorId  = reader.IsDBNull(1) ? "" : reader.GetString(1),
+                zona      = reader.IsDBNull(2) ? "" : reader.GetString(2),
+                tipoDado  = reader.IsDBNull(3) ? "" : reader.GetString(3),
+                valor     = reader.IsDBNull(4) ? "0" : reader.GetDecimal(4).ToString(CultureInfo.InvariantCulture),
+                timestamp = reader.IsDBNull(5) ? "" : reader.GetDateTime(5).ToString("yyyy-MM-dd HH:mm:ss")
             });
 
         return JsonSerializer.Serialize(rows, _jsonOpts);
@@ -265,6 +266,10 @@ partial class ServerCentral
         catch (Grpc.Core.RpcException ex) when (ex.StatusCode == Grpc.Core.StatusCode.NotFound)
         {
             return JsonSerializer.Serialize(new { erro = "Sem dados para os filtros fornecidos." }, _jsonOpts);
+        }
+        catch (Grpc.Core.RpcException ex)
+        {
+            return JsonSerializer.Serialize(new { erro = ex.Status.Detail }, _jsonOpts);
         }
     }
 
@@ -342,15 +347,13 @@ partial class ServerCentral
         {
             _isOnline = false;
             _server?.Stop();
-            _filaEscrita.CompleteAdding();
-            _threadConsumidor.Join(TimeSpan.FromSeconds(5));
             Environment.Exit(0);
         });
         return JsonSerializer.Serialize(new { ok = true }, _jsonOpts);
     }
 
     // GET /api/stream/start?sensor=
-    static string HandleStreamStart(System.Collections.Specialized.NameValueCollection q)
+    static async Task<string> HandleStreamStart(System.Collections.Specialized.NameValueCollection q)
     {
         string sensorId = q["sensor"] ?? "";
         if (string.IsNullOrEmpty(sensorId))
@@ -365,7 +368,7 @@ partial class ServerCentral
         if (!_gatewayIps.TryGetValue(info.GatewayId, out string gwIp))
             return JsonSerializer.Serialize(new { erro = $"IP do gateway {info.GatewayId} desconhecido." }, _jsonOpts);
 
-        IniciarStream(sensorId);
+        await IniciarStream(sensorId);
         if (!_streamingAtivo)
             return JsonSerializer.Serialize(new { erro = "Falha ao iniciar stream — ver logs do servidor." }, _jsonOpts);
         return JsonSerializer.Serialize(new { ok = true, sensor = sensorId, gateway = info.GatewayId, gwIp }, _jsonOpts);

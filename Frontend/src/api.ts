@@ -18,6 +18,7 @@ export interface Leitura {
   valor: string;
   timestamp: string;
   isAlarm: boolean;
+  qualidade: number;
 }
 
 export interface Alarme {
@@ -70,10 +71,10 @@ async function get<T>(path: string): Promise<T> {
 }
 
 export const api = {
-  sensores: ()                                          => get<Sensor[]>("/api/sensores"),
-  dados:    (zona="", tipo="", sensor="", limite=150)  => get<Leitura[]>(`/api/dados?zona=${zona}&tipo=${tipo}&sensor=${sensor}&limite=${limite}`),
-  alarmes:  (zona="", tipo="", limite=50)              => get<Alarme[]>(`/api/alarmes?zona=${zona}&tipo=${tipo}&limite=${limite}`),
-  analise:  (zona="", tipo="")                         => get<Analise>(`/api/analise?zona=${zona}&tipo=${tipo}`),
-  padroes:  (zona="", tipo="")                         => get<Padroes>(`/api/padroes?zona=${zona}&tipo=${tipo}`),
-  previsao: (zona="", tipo="", horas=6)                => get<Previsao>(`/api/previsao?zona=${zona}&tipo=${tipo}&horas=${horas}`),
+  sensores: ()                                         => get<Sensor[]>("/api/sensores"),
+  dados:    (zona="", tipo="", sensor="", limite=150) => get<Leitura[]>(`/api/dados?zona=${zona}&tipo=${tipo}&sensor=${sensor}&limite=${limite}`),
+  alarmes:  (zona="", tipo="", limite=50)             => get<Alarme[]>(`/api/alarmes?zona=${zona}&tipo=${tipo}&limite=${limite}`),
+  analise:  (zona="", tipo="")                        => get<Analise>(`/api/analise?zona=${zona}&tipo=${tipo}`),
+  padroes:  (zona="", tipo="")                        => get<Padroes>(`/api/padroes?zona=${zona}&tipo=${tipo}`),
+  previsao: (zona="", tipo="", horas=6)               => get<Previsao>(`/api/previsao?zona=${zona}&tipo=${tipo}&horas=${horas}`),
 };

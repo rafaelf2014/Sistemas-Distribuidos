@@ -39,4 +39,5 @@ message LeituraProcessada {
   string timestamp         = 7;
   bool   valido            = 8;  // false = fora de range, descartar
   string observacao        = 9;  // motivo se inválido, info se convertido
+  float  qualidade         = 10; // 0.0 (inválido) .. 1.0 (óptimo)
 }

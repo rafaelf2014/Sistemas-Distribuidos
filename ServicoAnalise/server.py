@@ -7,16 +7,20 @@ Gerar código gRPC a partir do proto (executar uma vez):
 """
 
 import grpc
+import os
 from concurrent import futures
 import analysis_pb2
 import analysis_pb2_grpc
-import sqlite3
+import psycopg2
+from psycopg2 import pool as pg_pool
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 
-DB_PATH = "../Server/ServerData.db"
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@localhost/one_health")
 PORT    = 50052
+
+_pool: pg_pool.ThreadedConnectionPool = None
 
 # Thresholds de risco por tipo de dado (valores médios considerados preocupantes)
 RISCO_THRESHOLDS = {
@@ -32,26 +36,32 @@ RISCO_THRESHOLDS = {
 class AnaliseServicer(analysis_pb2_grpc.AnaliseServiceServicer):
 
     def _carregar_dados(self, zona, tipo_dado, sensor_id, data_inicio, data_fim):
-        conn = sqlite3.connect(DB_PATH)
-        query = "SELECT Valor, Timestamp, IsAlarm FROM Dados WHERE 1=1"
+        query = "SELECT valor, timestamp, is_alarm FROM leituras WHERE 1=1"
         params = []
 
         if zona:
-            query += " AND Zona = ?";      params.append(zona)
+            query += " AND zona = %s";           params.append(zona)
         if tipo_dado:
-            query += " AND TipoDado = ?";  params.append(tipo_dado)
+            query += " AND tipo_dado = %s";      params.append(tipo_dado)
         if sensor_id:
-            query += " AND SensorId = ?";  params.append(sensor_id)
+            query += " AND sensor_id = %s";      params.append(sensor_id)
         if data_inicio:
-            query += " AND Timestamp >= ?"; params.append(data_inicio)
+            query += " AND timestamp >= %s";     params.append(data_inicio)
         if data_fim:
-            query += " AND Timestamp <= ?";  params.append(data_fim)
+            query += " AND timestamp <= %s";     params.append(data_fim)
 
-        df = pd.read_sql_query(query, conn, params=params)
-        conn.close()
+        query += " ORDER BY timestamp DESC LIMIT 10000"
+
+        conn = _pool.getconn()
+        try:
+            df = pd.read_sql_query(query, conn, params=params)
+        finally:
+            _pool.putconn(conn)
+        df = df.rename(columns={"valor": "Valor", "timestamp": "Timestamp", "is_alarm": "IsAlarm"})
         df["Valor"] = pd.to_numeric(df["Valor"], errors="coerce")
         df["Timestamp"] = pd.to_datetime(df["Timestamp"], errors="coerce")
-        return df.dropna(subset=["Valor"])
+        df = df.dropna(subset=["Valor"])
+        return df.sort_values("Timestamp").reset_index(drop=True)
 
     def AnalisarZona(self, request, context):
         df = self._carregar_dados(
@@ -149,7 +159,7 @@ class AnaliseServicer(analysis_pb2_grpc.AnaliseServiceServicer):
         )
 
     def PreviRisco(self, request, context):
-        df = self._carregar_dados(request.zona, request.tipo_dado, "", "", "")
+        df = self._carregar_dados(request.zona, request.tipo_dado, request.sensor_id, "", "")
 
         if df.empty or len(df) < 5:
             return analysis_pb2.ResultadoPrevisao(
@@ -261,12 +271,16 @@ def _gerar_recomendacao(tipo: str, risco: float, media: float, tendencia: float)
 
 
 def serve():
+    global _pool
+    _pool = pg_pool.ThreadedConnectionPool(minconn=1, maxconn=4, dsn=DATABASE_URL)
+
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=4))
     analysis_pb2_grpc.add_AnaliseServiceServicer_to_server(AnaliseServicer(), server)
     server.add_insecure_port(f"[::]:{PORT}")
     server.start()
     print(f"[ONE HEALTH] Serviço de Análise activo na porta {PORT}")
     server.wait_for_termination()
+    _pool.closeall()
 
 
 if __name__ == "__main__":
