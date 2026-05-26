@@ -1,0 +1,15 @@
+{
+  "sensorId": "S005",
+  "zona": "CHAVES_ESTE",
+  "videoStream": false,
+  "leituras": [
+    {
+      "tipo": "RUIDO",
+      "intervaloMs": 10000
+    },
+    {
+      "tipo": "CO2",
+      "intervaloMs": 10000
+    }
+  ]
+}

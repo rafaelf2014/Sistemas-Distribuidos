@@ -9,7 +9,8 @@
   "CHAVES_ESTE": {
     "CO2": -1,
     "RUIDO": -1,
-    "TEMP": -1
+    "TEMP": -1,
+    "PART": -1
   },
   "CHAVES_SUL": {
     "PART": -1,

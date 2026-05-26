@@ -1,0 +1,11 @@
+{
+  "sensorId": "S004",
+  "zona": "CHAVES_ESTE",
+  "videoStream": false,
+  "leituras": [
+    {
+      "tipo": "PART",
+      "intervaloMs": 10000
+    }
+  ]
+}

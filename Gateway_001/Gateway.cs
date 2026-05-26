@@ -60,6 +60,8 @@ partial class MyTcpListener
     static readonly string caminhoSensores = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, @"..\..\..\sensores.json"));
     static readonly string caminhoAlarmes  = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, @"..\..\..\config_alarmes.json"));
 
+    static readonly string caminhoSujo     = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, @"..\..\..\buffer_sujo.csv"));
+
     static readonly object fileLock        = new object();
     static readonly object _bufferFileLock = new object();
     static readonly object _alarmesLock    = new object();
@@ -72,6 +74,7 @@ partial class MyTcpListener
 
     static readonly List<Timer> _timersAgregacao = new();
     static          Timer?      _timerWatchdog;
+    static          Timer?      _timerProcessamentoSujo;
 
     static readonly Dictionary<string, DateTime> _ultimoAlarme = new();
     static readonly object                        _alarmeCooldownLock = new();
@@ -95,6 +98,11 @@ partial class MyTcpListener
         _timerWatchdog.Elapsed += VerificarSensoresPerdidos;
         _timerWatchdog.AutoReset = true;
         _timerWatchdog.Start();
+
+        _timerProcessamentoSujo = new Timer(5000);
+        _timerProcessamentoSujo.Elapsed += ProcessarBufferSujo;
+        _timerProcessamentoSujo.AutoReset = true;
+        _timerProcessamentoSujo.Start();
 
         new Thread(IniciarListenerComandos) { IsBackground = true, Name = "CMD-Listener" }.Start();
 
@@ -127,7 +135,8 @@ partial class MyTcpListener
                     consumer.ReceivedAsync += async (_, ea) =>
                     {
                         string msg = Encoding.UTF8.GetString(ea.Body.ToArray());
-                        ProcessarMensagemSensor(msg);
+                        string zonaDetetada = ea.RoutingKey.Split('.')[0];
+                        ProcessarMensagemSensor(msg,zonaDetetada);
                         await _amqpChannel.BasicAckAsync(ea.DeliveryTag, false);
                     };
                     await _amqpChannel.BasicConsumeAsync(queue, autoAck: false, consumer: consumer);
@@ -431,63 +440,17 @@ partial class MyTcpListener
                     ? new DateTime(ticks).ToString("yyyy-MM-ddTHH:mm:ss")
                     : DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss");
 
-                var valoresNorm = new List<double>();
+                var valores = linhas
+                    .Where(l => double.TryParse(l, NumberStyles.Any, CultureInfo.InvariantCulture, out _))
+                    .Select(l => double.Parse(l, NumberStyles.Any, CultureInfo.InvariantCulture))
+                    .ToList();
 
-                if (_grpcClient != null)
+                if (valores.Count > 0)
                 {
-                    var bloco = new BlocoLeiturasBrutas();
-                    var rawsValidos = new List<double>();
+                    double media = valores.Average(); // Faz a média do Bloco
 
-                    foreach (string linha in linhas)
-                    {
-                        if (!double.TryParse(linha, NumberStyles.Any, CultureInfo.InvariantCulture, out double raw)) continue;
-                        bloco.Dados.Add(new LeituraBruta
-                        {
-                            GatewayId = _gatewayId,
-                            SensorId  = sensorId,
-                            Zona      = zona,
-                            Tipo      = tipoDado,
-                            Valor     = raw,
-                            Unidade   = unidade,
-                            Timestamp = ts
-                        });
-                        rawsValidos.Add(raw);
-                    }
-
-                    if (bloco.Dados.Count > 0)
-                    {
-                        try
-                        {
-                            var respostas = _grpcClient.NormalizarBloco(bloco);
-                            foreach (var resp in respostas.Dados)
-                            {
-                                if (resp.Valido)
-                                    valoresNorm.Add(resp.ValorNormalizado);
-                                else
-                                    RegistarLogEsquerda($"[gRPC] Rejeitado: {resp.Observacao}");
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            RegistarLogEsquerda($"[gRPC] Falha no bloco: {ex.Message}. A usar valores brutos.");
-                            valoresNorm.AddRange(rawsValidos);
-                        }
-                    }
-                }
-                else
-                {
-                    valoresNorm = linhas
-                        .Where(l => double.TryParse(l, NumberStyles.Any, CultureInfo.InvariantCulture, out _))
-                        .Select(l => double.Parse(l, NumberStyles.Any, CultureInfo.InvariantCulture))
-                        .ToList();
-                }
-
-                if (valoresNorm.Count > 0)
-                {
-                    double media = valoresNorm.Average();
-
-                    if (EnviarParaServidor("DATA_FORWARD", sensorId, tipoDado,
-                            media.ToString("F2", CultureInfo.InvariantCulture), ts))
+                    // Envia o bloco agregado diretamente para o Servidor Central
+                    if (EnviarParaServidor("DATA_FORWARD", sensorId, tipoDado, media.ToString("F2", CultureInfo.InvariantCulture), ts))
                     {
                         File.Delete(ficheiro);
                         RegistarLogEsquerda($"Forward pendente de {sensorId} ({tipoDado}) OK.");
@@ -503,104 +466,130 @@ partial class MyTcpListener
 
     #region HANDLER DE SENSORES
 
-    static void ProcessarMensagemSensor(string rawData)
+    static void ProcessarMensagemSensor(string rawData, string zonaDetetada)
     {
         try
         {
-            string[] parts  = rawData.Split('|');
-            string   command = parts[0].ToUpper();
-
-            switch (command)
+            if (rawData.StartsWith("HELLO") || rawData.StartsWith("HEARTBEAT") || rawData.StartsWith("BYE"))
             {
-                case "HELLO":
-                    if (parts.Length >= 4)
-                    {
-                        bool videoCapable = parts.Length >= 5 &&
-                                            bool.TryParse(parts[4], out bool vc) && vc;
-
-                        RegistarOuAtualizarSensor(parts[1], parts[2], parts[3], videoCapable);
-                        AutoPopularAlarmes(parts[2], parts[3]);
-                        EnviarRegistoSensorParaServidor(parts[1], parts[2], parts[3], videoCapable);
-                    }
-                    break;
-
-                case "DATA_SEND":
-                    if (parts.Length >= 5 &&
-                        double.TryParse(parts[3], NumberStyles.Any, CultureInfo.InvariantCulture, out double valor))
-                    {
-                        if (ValidarSensor(parts[1], parts[2]))
+                string[] parts  = rawData.Split('|');
+                string   command = parts[0].ToUpper();
+                switch (command)
+                {
+                    case "HELLO":
+                        if (parts.Length >= 4)
                         {
-                            string sensorId  = parts[1];
-                            string tipoDado  = parts[2].ToUpper();
-                            string timestamp = parts[4];
-                            string zona      = ObterZonaDoSensor(sensorId).ToUpper();
-
-                            long tickAtivo;
-                            lock (_bufferFileLock)
-                            {
-                                tickAtivo = _janelasTemporais.TryGetValue(tipoDado, out long tk)
-                                    ? tk : DateTime.Now.Ticks;
-                            }
-                            File.AppendAllText(
-                                Path.Combine(pastaProjeto, $"pendente_{tickAtivo}_{sensorId}_{tipoDado}.csv"),
-                                valor.ToString(CultureInfo.InvariantCulture) + Environment.NewLine);
-
-                            string un = _unidadesMedida.TryGetValue(tipoDado, out string? u) ? u : "";
-
-                            bool isAnomalia = false;
-                            lock (_alarmesLock)
-                            {
-                                if (_limitesAlarme.TryGetValue(zona, out var z) &&
-                                    z.TryGetValue(tipoDado, out double limite) &&
-                                    limite != -1.0 && valor > limite)
-                                    isAnomalia = true;
-                            }
-
-                            if (isAnomalia)
-                            {
-                                string chave = $"{sensorId}.{tipoDado}";
-                                bool emCooldown;
-                                lock (_alarmeCooldownLock)
-                                {
-                                    emCooldown = _ultimoAlarme.TryGetValue(chave, out DateTime ultimo) &&
-                                                 (DateTime.Now - ultimo).TotalSeconds < 30;
-                                    if (!emCooldown) _ultimoAlarme[chave] = DateTime.Now;
-                                }
-
-                                if (!emCooldown)
-                                {
-                                    RegistarLogEsquerda(
-                                        $"EDGE ANALYTICS: Anomalia em {sensorId}! ({tipoDado} = {valor}{un} @ {zona})", true);
-
-                                    bool temVideo;
-                                    lock (fileLock)
-                                    {
-                                        temVideo = _sensoresCache.TryGetValue(sensorId, out var sc) && sc.VideoStream;
-                                    }
-                                    if (temVideo)
-                                        RegistarLogEsquerda($"[VIDEO] {sensorId} tem capacidade de streaming.", true);
-
-                                    EnviarParaServidor("ALARM_FORWARD", sensorId, tipoDado, parts[3], timestamp);
-                                }
-                            }
-                            else
-                            {
-                                RegistarLogEsquerda($"{sensorId}: {tipoDado} = {valor}{un}");
-                            }
+                            bool videoCapable = parts.Length >= 5 && bool.TryParse(parts[4], out bool vc) && vc;
+                            RegistarOuAtualizarSensor(parts[1], parts[2], parts[3], videoCapable);
+                            AutoPopularAlarmes(parts[2], parts[3]);
+                            EnviarRegistoSensorParaServidor(parts[1], parts[2], parts[3], videoCapable);
                         }
-                    }
-                    break;
-
-                case "HEARTBEAT":
-                    if (parts.Length >= 2) AtualizarLastSync(parts[1]);
-                    break;
-
-                case "BYE":
-                    if (parts.Length >= 2) AtualizarEstadoSensor(parts[1], "desativado");
-                    break;
+                        break;
+                    case "HEARTBEAT":
+                        if (parts.Length >= 2) AtualizarLastSync(parts[1]);
+                        break;
+                    case "BYE":
+                        if (parts.Length >= 2) AtualizarEstadoSensor(parts[1], "desativado");
+                        break;
+                }
+                return;
             }
+            lock (_bufferFileLock)
+            {
+                File.AppendAllText(caminhoSujo, $"{zonaDetetada}\t{rawData}{Environment.NewLine}");
+            }
+        
         }
         catch (Exception ex) { RegistarLogEsquerda($"Erro ao processar mensagem: {ex.Message}"); }
+    }
+
+    #endregion
+    #region PIPELINE gRPC
+    static async void ProcessarBufferSujo(object? sender, ElapsedEventArgs e)
+    {
+        string[] linhasSujas;
+
+        lock (_bufferFileLock)
+        {
+            if (!File.Exists(caminhoSujo)) return;
+            linhasSujas = File.ReadAllLines(caminhoSujo);
+            if (linhasSujas.Length == 0) return;
+            File.WriteAllText(caminhoSujo, string.Empty);
+        }
+
+        var bloco = new BlocoLeiturasBrutas();
+        foreach (var linha in linhasSujas)
+        {
+            string[] p = linha.Split('\t');
+            if (p.Length >= 2)
+            {
+                bloco.Dados.Add(new LeituraBruta { Zona = p[0], PayloadRede = p[1], GatewayId = _gatewayId });
+            }
+        }
+
+        if (bloco.Dados.Count == 0 || _grpcClient == null) return;
+
+        try
+        {
+            var respostasLimpidas = await _grpcClient.NormalizarBlocoAsync(bloco);
+
+            foreach (var limpo in respostasLimpidas.Dados)
+            {
+                if (limpo.Valido)
+                {
+                    VerificarAnomalia(limpo);
+
+                    long tickAtivo;
+                    lock (_bufferFileLock)
+                    {
+                        tickAtivo = _janelasTemporais.TryGetValue(limpo.Tipo, out long tk) ? tk : DateTime.Now.Ticks;
+                        string filepath = Path.Combine(pastaProjeto, $"pendente_{tickAtivo}_{limpo.SensorId}_{limpo.Tipo}.csv");
+                        File.AppendAllText(filepath, limpo.ValorNormalizado.ToString(CultureInfo.InvariantCulture) + Environment.NewLine);
+                    }
+                }
+                else
+                {
+                    RegistarLogEsquerda($"[gRPC] Rejeitado: {limpo.Observacao}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            RegistarLogEsquerda($"[gRPC] Falha: {ex.Message}. A repor lixo no buffer.");
+            lock (_bufferFileLock) { File.AppendAllLines(caminhoSujo, linhasSujas); }
+        }
+    }
+    static void VerificarAnomalia(LeituraProcessada l)
+    {
+        bool isAnomalia = false;
+        string zona = l.Zona.ToUpper();
+
+        lock (_alarmesLock)
+        {
+            if (_limitesAlarme.TryGetValue(zona, out var z) &&
+                z.TryGetValue(l.Tipo, out double limite) &&
+                limite != -1.0 && l.ValorNormalizado > limite)
+            {
+                isAnomalia = true;
+            }
+        }
+
+        if (isAnomalia)
+        {
+            string chave = $"{l.SensorId}.{l.Tipo}";
+            bool emCooldown;
+            lock (_alarmeCooldownLock)
+            {
+                emCooldown = _ultimoAlarme.TryGetValue(chave, out DateTime ultimo) && (DateTime.Now - ultimo).TotalSeconds < 30;
+                if (!emCooldown) _ultimoAlarme[chave] = DateTime.Now;
+            }
+
+            if (!emCooldown)
+            {
+                RegistarLogEsquerda($"ANOMALIA em {l.SensorId}! ({l.Tipo} = {l.ValorNormalizado}{l.UnidadePadrao})", true);
+                EnviarParaServidor("ALARM_FORWARD", l.SensorId, l.Tipo, l.ValorNormalizado.ToString(CultureInfo.InvariantCulture), l.Timestamp);
+            }
+        }
     }
 
     #endregion
