@@ -1,5 +1,8 @@
 -- ONE HEALTH — PostgreSQL Schema
--- Run once: psql -U postgres -d one_health -f schema.sql
+-- Reset + recreate: psql -U postgres -d one_health -f schema.sql
+
+DROP TABLE IF EXISTS leituras;
+DROP TABLE IF EXISTS sensores;
 
 -- Registered sensors and their current state
 CREATE TABLE IF NOT EXISTS sensores (
@@ -22,10 +25,12 @@ CREATE TABLE IF NOT EXISTS leituras (
     tipo_dado  VARCHAR(10),
     valor      NUMERIC(10, 3),
     timestamp  TIMESTAMPTZ,
-    is_alarm   BOOLEAN        DEFAULT FALSE,
-    qualidade  REAL           DEFAULT 1.0
+    is_alarm      BOOLEAN        DEFAULT FALSE,
+    qualidade     REAL           DEFAULT 1.0,
+    anomaly_score REAL           DEFAULT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_leituras_zona_tipo_ts ON leituras (zona, tipo_dado, timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_leituras_sensor_ts    ON leituras (sensor_id, timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_leituras_alarmes      ON leituras (is_alarm) WHERE is_alarm = TRUE;
+CREATE INDEX IF NOT EXISTS idx_leituras_anomaly      ON leituras (anomaly_score DESC) WHERE anomaly_score IS NOT NULL;

@@ -47,22 +47,14 @@ Write-Host "  [3/5] Gateways" -ForegroundColor Yellow
 
 $pids += Launch "Gateway_001" "$root\Gateway_001" "dotnet run"
 Step "Gateway_001 iniciado       (AMQP / porta 14001)"
-Start-Sleep -Seconds 1
-
-$pids += Launch "Gateway_002" "$root\Gateway_002" "dotnet run"
-Step "Gateway_002 iniciado       (TCP 5000 / porta 14001)"
 Start-Sleep -Seconds 3
 
 # ── Layer 4: Sensors ───────────────────────────────────
 Write-Host ""
 Write-Host "  [4/5] Sensores" -ForegroundColor Yellow
 
-$sensors = @("Sensor_001","Sensor_002","Sensor_003","Sensor_011","Sensor_012","Sensor_013")
-foreach ($s in $sensors) {
-    $pids += Launch $s "$root\$s" "dotnet run"
-    Step "$s iniciado"
-    Start-Sleep -Milliseconds 800
-}
+$pids += Launch "Sensor_001" "$root\Sensor_001" "dotnet run"
+Step "Sensor_001 iniciado"
 Start-Sleep -Seconds 2
 
 # ── Layer 5: Frontend ──────────────────────────────────

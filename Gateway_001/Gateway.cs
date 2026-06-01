@@ -10,8 +10,10 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Xml.Linq;
 using Grpc.Net.Client;
 using PreProcessamento;
+using ServicoAnalise;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
 
@@ -31,6 +33,7 @@ class ConfigGateway
     [JsonPropertyName("rabbitMqHost")]            public string               RabbitMqHost            { get; set; } = "localhost";
     [JsonPropertyName("zonasSubscritas")]         public List<string>         ZonasSubscritas         { get; set; } = new();
     [JsonPropertyName("preProcessamentoGrpcUrl")] public string               PreProcessamentoGrpcUrl { get; set; } = "http://localhost:50051";
+    [JsonPropertyName("analiseGrpcUrl")]          public string               AnaliseGrpcUrl          { get; set; } = "http://localhost:50052";
     [JsonPropertyName("tiposDados")]              public List<TipoDadoConfig> TiposDados              { get; set; } = new();
 }
 
@@ -79,6 +82,11 @@ partial class MyTcpListener
 
     // In-memory chunk buffer — key = "sensorId.TIPO"
     private record LeituraBuffer(string SensorId, string Zona, string TipoDado, string Unidade, double Valor, DateTime Timestamp, bool IsAlarm = false);
+
+    // Fully enriched reading ready to send to server
+    private record LeituraFinal(string SensorId, string Zona, string TipoDado, string Unidade,
+                                 double Valor, DateTime Timestamp, float Qualidade,
+                                 double? AnomalyScore, bool IsAlarm);
     static readonly ConcurrentDictionary<string, ConcurrentQueue<LeituraBuffer>> _buffer       = new();
     static readonly ConcurrentDictionary<string, DateTime>                        _bufferInicio = new();
 
@@ -100,6 +108,7 @@ partial class MyTcpListener
     static System.Threading.Timer? _timerDashboard;
 
     static PreProcessamentoService.PreProcessamentoServiceClient? _grpcClient;
+    static AnaliseService.AnaliseServiceClient?                   _analiseClient;
 
     #endregion
 
@@ -148,7 +157,8 @@ partial class MyTcpListener
                     {
                         string msg = Encoding.UTF8.GetString(ea.Body.ToArray());
                         await Task.Run(() => ProcessarMensagemSensor(msg));
-                        await _amqpChannel.BasicAckAsync(ea.DeliveryTag, false);
+                        if (_amqpChannel != null)
+                            await _amqpChannel.BasicAckAsync(ea.DeliveryTag, false);
                     };
                     await _amqpChannel.BasicConsumeAsync(queue, autoAck: false, consumer: consumer);
                     RegistarLogEsquerda($"[AMQP] Subscrito: {zona}");
@@ -284,11 +294,22 @@ partial class MyTcpListener
         {
             var canal = GrpcChannel.ForAddress(cfg.PreProcessamentoGrpcUrl);
             _grpcClient = new PreProcessamentoService.PreProcessamentoServiceClient(canal);
-            RegistarLogEsquerda($"[gRPC] Canal iniciado: {cfg.PreProcessamentoGrpcUrl}");
+            RegistarLogEsquerda($"[gRPC] Canal PreProcessamento iniciado: {cfg.PreProcessamentoGrpcUrl}");
         }
         catch (Exception ex)
         {
-            RegistarLogEsquerda($"[gRPC] Falha ao iniciar canal: {ex.Message}");
+            RegistarLogEsquerda($"[gRPC] Falha ao iniciar canal PreProcessamento: {ex.Message}");
+        }
+
+        try
+        {
+            var canalAnalise = GrpcChannel.ForAddress(cfg.AnaliseGrpcUrl);
+            _analiseClient = new AnaliseService.AnaliseServiceClient(canalAnalise);
+            RegistarLogEsquerda($"[gRPC] Canal Análise iniciado: {cfg.AnaliseGrpcUrl}");
+        }
+        catch (Exception ex)
+        {
+            RegistarLogEsquerda($"[gRPC] Falha ao iniciar canal Análise: {ex.Message}");
         }
 
         _flushTask = Task.Run(() => LoopFlush(_cts.Token));
@@ -516,8 +537,48 @@ partial class MyTcpListener
             validas.AddRange(amostras.Select(a => (a, a.Valor, 1.0f)));
         }
 
-        if (validas.Count > 0)
-            await EnviarBatchParaServidor(validas);
+        // Convert to final enriched records
+        var finais = validas.Select(v => new LeituraFinal(
+            v.Original.SensorId, v.Original.Zona, v.Original.TipoDado, v.Original.Unidade,
+            v.ValorFinal, v.Original.Timestamp, v.Qualidade,
+            AnomalyScore: null, IsAlarm: v.Original.IsAlarm
+        )).ToList();
+
+        // ML anomaly scoring
+        if (_analiseClient != null && finais.Count > 0)
+        {
+            try
+            {
+                var pedido = new PedidoScoreBatch { GatewayId = _gatewayId };
+                foreach (var f in finais)
+                    pedido.Leituras.Add(new LeituraScore
+                    {
+                        SensorId  = f.SensorId,
+                        Zona      = f.Zona,
+                        Tipo      = f.TipoDado,
+                        Valor     = f.Valor,
+                        Timestamp = f.Timestamp.ToString("yyyy-MM-ddTHH:mm:ss")
+                    });
+
+                var resultado = await _analiseClient.ScoreBatchAsync(pedido);
+
+                if (resultado.ModeloAquecido)
+                {
+                    for (int i = 0; i < Math.Min(resultado.Anomalias.Count, finais.Count); i++)
+                    {
+                        var a = resultado.Anomalias[i];
+                        finais[i] = finais[i] with { AnomalyScore = a.Score };
+                        if (a.IsAnomalia)
+                            RegistarLogEsquerda(
+                                $"[ML] Anomalia: {finais[i].SensorId} {finais[i].TipoDado} score={a.Score:F2} — {a.Motivo}", true);
+                    }
+                }
+            }
+            catch (Exception ex) { RegistarLogEsquerda($"[ML] ScoreBatch falhou: {ex.Message}"); }
+        }
+
+        if (finais.Count > 0)
+            await EnviarBatchParaServidor(finais);
     }
 
     #endregion
@@ -557,7 +618,9 @@ partial class MyTcpListener
                             break;
                         }
 
-                        DateTime timestamp = DateTime.TryParse(parts[4], out DateTime ts) ? ts : DateTime.Now;
+                        DateTime timestamp = DateTime.TryParse(parts[4], null,
+                            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                            out DateTime ts) ? ts : DateTime.UtcNow;
                         string   zona      = ObterZonaDoSensor(sensorId).ToUpper();
                         string   un        = _unidades.TryGetValue(tipoDado, out string? u) ? u : "";
 
@@ -648,7 +711,7 @@ partial class MyTcpListener
         RegistarLogEsquerda($"[TCP] Ligado ao servidor {_serverIp}:14000.");
     }
 
-    static async Task EnviarBatchParaServidor(List<(LeituraBuffer Original, double ValorFinal, float Qualidade)> leituras)
+    static async Task EnviarBatchParaServidor(List<LeituraFinal> leituras)
     {
         string json = JsonSerializer.Serialize(new
         {
@@ -656,13 +719,14 @@ partial class MyTcpListener
             gatewayId = _gatewayId,
             leituras  = leituras.Select(l => new
             {
-                sensorId  = l.Original.SensorId,
-                zona      = l.Original.Zona,
-                tipoDado  = l.Original.TipoDado,
-                valor     = l.ValorFinal,
-                timestamp = l.Original.Timestamp.ToString("yyyy-MM-ddTHH:mm:ss"),
-                qualidade = l.Qualidade,
-                isAlarm   = l.Original.IsAlarm
+                sensorId     = l.SensorId,
+                zona         = l.Zona,
+                tipoDado     = l.TipoDado,
+                valor        = l.Valor,
+                timestamp    = l.Timestamp.ToString("yyyy-MM-ddTHH:mm:ss"),
+                qualidade    = l.Qualidade,
+                isAlarm      = l.IsAlarm,
+                anomalyScore = l.AnomalyScore
             }).ToArray()
         }, _jsonWrite);
 
@@ -680,7 +744,7 @@ partial class MyTcpListener
         }
         else
         {
-            string tipo = leituras.First().Original.TipoDado;
+            string tipo = leituras.First().TipoDado;
             RegistarLogDireita($"BATCH {leituras.Count}x ({tipo})", $"ACK: {resposta.Trim()}");
         }
     }
@@ -747,7 +811,7 @@ partial class MyTcpListener
 
         _timerWatchdog?.Dispose();
         _timerDashboard?.Dispose();
-        GuardarAlarmesJson();
+        lock (_alarmesLock) { GuardarAlarmesJson(); }
         SalvarPendentes();
 
         try { _amqpChannel?.Dispose(); _amqpConnection?.Dispose(); } catch { }

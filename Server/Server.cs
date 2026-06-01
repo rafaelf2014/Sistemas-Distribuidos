@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -109,6 +110,7 @@ partial class ServerCentral
             return "{\"tipo\":\"ACK_BATCH\",\"status\":\"ERRO\",\"erro\":\"Campo leituras ausente\"}";
 
         int count = 0;
+        var sensorIdsNoBatch = new System.Collections.Generic.HashSet<string>();
         try
         {
             await using var conn  = new NpgsqlConnection(connectionString);
@@ -122,16 +124,20 @@ partial class ServerCentral
                 string tipoDado  = l.TryGetProperty("tipoDado",  out var td) ? td.GetString() ?? "" : "";
                 double valor     = l.TryGetProperty("valor",     out var v)  ? v.GetDouble()  : 0;
                 string tsStr     = l.TryGetProperty("timestamp", out var ts) ? ts.GetString() ?? "" : "";
-                double qualidade = l.TryGetProperty("qualidade", out var q)  ? q.GetDouble()  : 1.0;
-                bool   isAlarm   = l.TryGetProperty("isAlarm",   out var ia) && ia.GetBoolean();
+                double  qualidade    = l.TryGetProperty("qualidade",    out var q)   ? q.GetDouble()   : 1.0;
+                bool    isAlarm      = l.TryGetProperty("isAlarm",      out var ia)  && ia.GetBoolean();
+                double? anomalyScore = l.TryGetProperty("anomalyScore", out var asc) && asc.ValueKind != JsonValueKind.Null
+                                       ? asc.GetDouble() : (double?)null;
 
-                DateTime timestamp = DateTime.TryParse(tsStr, out DateTime dt) ? dt : DateTime.Now;
+                DateTime timestamp = DateTime.TryParse(tsStr, null,
+                    DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                    out DateTime dt) ? dt : DateTime.UtcNow;
 
                 if (isAlarm) RegistarLog($"[{zona}] ANOMALIA! Sensor: {sensorId} | {tipoDado} = {valor}", true);
 
                 var cmd = new NpgsqlBatchCommand(
-                    "INSERT INTO leituras (sensor_id, gateway_id, zona, tipo_dado, valor, timestamp, is_alarm, qualidade) " +
-                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)");
+                    "INSERT INTO leituras (sensor_id, gateway_id, zona, tipo_dado, valor, timestamp, is_alarm, qualidade, anomaly_score) " +
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)");
                 cmd.Parameters.Add(new NpgsqlParameter { Value = sensorId });
                 cmd.Parameters.Add(new NpgsqlParameter { Value = gatewayId });
                 cmd.Parameters.Add(new NpgsqlParameter { Value = zona });
@@ -140,14 +146,23 @@ partial class ServerCentral
                 cmd.Parameters.Add(new NpgsqlParameter { Value = timestamp });
                 cmd.Parameters.Add(new NpgsqlParameter { Value = isAlarm });
                 cmd.Parameters.Add(new NpgsqlParameter { Value = (float)qualidade });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = anomalyScore.HasValue ? (object)(float)anomalyScore.Value : DBNull.Value });
                 batch.BatchCommands.Add(cmd);
+                if (!string.IsNullOrEmpty(sensorId)) sensorIdsNoBatch.Add(sensorId);
                 count++;
 
                 RegistarLog($"[{zona}] {sensorId} → {tipoDado} = {valor}");
             }
 
             if (count > 0)
+            {
                 await batch.ExecuteNonQueryAsync();
+                // Refresh ultima_sync so the heartbeat checker knows the sensor is still alive
+                await using var syncCmd = conn.CreateCommand();
+                syncCmd.CommandText = "UPDATE sensores SET ultima_sync = NOW() WHERE sensor_id = ANY($1)";
+                syncCmd.Parameters.Add(new NpgsqlParameter { Value = sensorIdsNoBatch.ToArray() });
+                await syncCmd.ExecuteNonQueryAsync();
+            }
         }
         catch (Exception ex)
         {
@@ -211,13 +226,13 @@ partial class ServerCentral
             await using var cmd = conn.CreateCommand();
             cmd.CommandText = @"
                 INSERT INTO sensores (sensor_id, gateway_id, zona, tipos, video_stream, status, ultima_sync)
-                VALUES ($1, $2, $3, $4, $5, 'online', NOW())
+                VALUES ($1, $2, $3, $4, $5, 'ativo', NOW())
                 ON CONFLICT (sensor_id) DO UPDATE SET
                     gateway_id   = EXCLUDED.gateway_id,
                     zona         = EXCLUDED.zona,
                     tipos        = EXCLUDED.tipos,
                     video_stream = EXCLUDED.video_stream,
-                    status       = 'online',
+                    status       = 'ativo',
                     ultima_sync  = NOW()";
             cmd.Parameters.Add(new NpgsqlParameter { Value = sensorId });
             cmd.Parameters.Add(new NpgsqlParameter { Value = gatewayId });
@@ -284,19 +299,23 @@ partial class ServerCentral
                     registado_em TIMESTAMP   DEFAULT NOW()
                 );
                 CREATE TABLE IF NOT EXISTS leituras (
-                    id         BIGSERIAL      PRIMARY KEY,
-                    sensor_id  VARCHAR(20),
-                    gateway_id VARCHAR(50),
-                    zona       VARCHAR(50),
-                    tipo_dado  VARCHAR(10),
-                    valor      NUMERIC(10,3),
-                    timestamp  TIMESTAMPTZ,
-                    is_alarm   BOOLEAN        DEFAULT FALSE,
-                    qualidade  REAL           DEFAULT 1.0
+                    id            BIGSERIAL      PRIMARY KEY,
+                    sensor_id     VARCHAR(20),
+                    gateway_id    VARCHAR(50),
+                    zona          VARCHAR(50),
+                    tipo_dado     VARCHAR(10),
+                    valor         NUMERIC(10,3),
+                    timestamp     TIMESTAMPTZ,
+                    is_alarm      BOOLEAN        DEFAULT FALSE,
+                    qualidade     REAL           DEFAULT 1.0,
+                    anomaly_score REAL           DEFAULT NULL
                 );
+                ALTER TABLE leituras ADD COLUMN IF NOT EXISTS qualidade     REAL DEFAULT 1.0;
+                ALTER TABLE leituras ADD COLUMN IF NOT EXISTS anomaly_score REAL DEFAULT NULL;
                 CREATE INDEX IF NOT EXISTS idx_leituras_zona_tipo_ts ON leituras (zona, tipo_dado, timestamp DESC);
                 CREATE INDEX IF NOT EXISTS idx_leituras_sensor_ts    ON leituras (sensor_id, timestamp DESC);
-                CREATE INDEX IF NOT EXISTS idx_leituras_alarmes      ON leituras (is_alarm) WHERE is_alarm = TRUE;";
+                CREATE INDEX IF NOT EXISTS idx_leituras_alarmes      ON leituras (is_alarm) WHERE is_alarm = TRUE;
+                CREATE INDEX IF NOT EXISTS idx_leituras_anomaly      ON leituras (anomaly_score DESC) WHERE anomaly_score IS NOT NULL;";
             cmd.ExecuteNonQuery();
             RegistarLog("Schema verificado.");
         }

@@ -26,7 +26,7 @@ partial class MyTcpListener
                 TcpClient client = listener.AcceptTcpClient();
                 new Thread(() => HandleComandoServidor(client)) { IsBackground = true }.Start();
             }
-            catch { break; }
+            catch (Exception ex) { RegistarLogEsquerda($"[CMD] Listener error: {ex.Message}"); }
         }
     }
 

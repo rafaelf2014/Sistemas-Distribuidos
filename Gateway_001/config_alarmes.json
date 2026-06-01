@@ -23,10 +23,13 @@
   },
   "CHAVES_NORTE": {
     "CO2": -1,
-    "TEMP": 50,
+    "TEMP": -1,
     "HUM": -1,
-    "NO2": 150,
-    "O3": 120,
-    "WIND": -1
+    "NO2": -1,
+    "O3": -1,
+    "WIND": -1,
+    "RUIDO": -1,
+    "LUMIN": -1,
+    "PART": -1
   }
 }

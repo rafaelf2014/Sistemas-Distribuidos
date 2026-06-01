@@ -56,7 +56,7 @@ namespace sensor
         private static double GerarBaseline(string tipo)
         {
             var    p    = _profiles[ObterZonaTipo()];
-            double h    = DateTime.Now.Hour + DateTime.Now.Minute / 60.0 + DateTime.Now.Second / 3600.0;
+            double h    = (DateTime.Now.TimeOfDay.TotalSeconds % 7200.0) / 7200.0 * 24.0;
 
             double sin24 = Math.Sin(2 * Math.PI / 24.0 * (h - 6));
             double sin4  = Math.Sin(2 * Math.PI /  4.0 * h);
@@ -207,7 +207,7 @@ namespace sensor
             double delta    = CalcularImpactoEventos(tipo);
             double v        = Math.Round(baseline + delta, 1);
 
-            string ts  = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss");
+            string ts  = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ");
             string val = v.ToString(CultureInfo.InvariantCulture);
 
             string evTag = "";

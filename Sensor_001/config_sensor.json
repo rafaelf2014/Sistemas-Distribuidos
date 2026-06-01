@@ -5,9 +5,14 @@
   "videoStream": true,
   "rabbitMqHost": "localhost",
   "leituras": [
-    { "tipo": "TEMP", "intervaloMs": 5000 },
-    { "tipo": "HUM",  "intervaloMs": 5000 },
-    { "tipo": "NO2",  "intervaloMs": 7000 },
-    { "tipo": "WIND", "intervaloMs": 6000 }
+    { "tipo": "TEMP",  "intervaloMs": 5000 },
+    { "tipo": "HUM",   "intervaloMs": 5000 },
+    { "tipo": "CO2",   "intervaloMs": 5000 },
+    { "tipo": "RUIDO", "intervaloMs": 5000 },
+    { "tipo": "LUMIN", "intervaloMs": 5000 },
+    { "tipo": "PART",  "intervaloMs": 5000 },
+    { "tipo": "NO2",   "intervaloMs": 5000 },
+    { "tipo": "O3",    "intervaloMs": 5000 },
+    { "tipo": "WIND",  "intervaloMs": 5000 }
   ]
 }

@@ -6,9 +6,12 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Security.Claims;
 using Grpc.Net.Client;
 using ServicoAnalise;
 using Npgsql;
+using Microsoft.IdentityModel.Tokens;
+using System.IdentityModel.Tokens.Jwt;
 
 // ==========================================
 // REST API (porta 8080) + cliente gRPC para ServicoAnalise
@@ -22,6 +25,15 @@ partial class ServerCentral
     {
         WriteIndented = true,
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+    };
+
+    private static readonly string _jwtSecret =
+        Environment.GetEnvironmentVariable("JWT_SECRET") ?? "one-health-dev-secret-change-in-prod";
+
+    private static readonly Dictionary<string, string> _credenciais = new()
+    {
+        [Environment.GetEnvironmentVariable("API_USER")     ?? "admin"] =
+         Environment.GetEnvironmentVariable("API_PASSWORD") ?? "admin"
     };
 
     static void IniciarApi()
@@ -73,10 +85,9 @@ partial class ServerCentral
         var req = ctx.Request;
         var res = ctx.Response;
 
-        // CORS headers para o frontend React
         res.AddHeader("Access-Control-Allow-Origin", "*");
-        res.AddHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-        res.AddHeader("Access-Control-Allow-Headers", "Content-Type");
+        res.AddHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+        res.AddHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
         res.ContentType = "application/json; charset=utf-8";
 
         if (req.HttpMethod == "OPTIONS")
@@ -86,20 +97,60 @@ partial class ServerCentral
             return;
         }
 
+        string path = req.Url?.AbsolutePath.TrimEnd('/') ?? "/";
+
+        // Login — no token required
+        if (path == "/api/login" && req.HttpMethod == "POST")
+        {
+            var (loginStatus, loginJson) = await HandleLogin(req);
+            res.StatusCode = loginStatus;
+            byte[] lb = Encoding.UTF8.GetBytes(loginJson);
+            res.ContentLength64 = lb.Length;
+            res.OutputStream.Write(lb, 0, lb.Length);
+            res.Close();
+            return;
+        }
+
+        // All other endpoints require a valid token
+        if (!ValidarToken(req))
+        {
+            res.StatusCode = 401;
+            byte[] unauth = Encoding.UTF8.GetBytes(
+                JsonSerializer.Serialize(new { erro = "Não autorizado." }, _jsonOpts));
+            res.ContentLength64 = unauth.Length;
+            res.OutputStream.Write(unauth, 0, unauth.Length);
+            res.Close();
+            return;
+        }
+
+        // stream/start is a mutating operation — enforce POST
+        if (path == "/api/stream/start" && req.HttpMethod != "POST")
+        {
+            res.StatusCode = 405;
+            res.AddHeader("Allow", "POST");
+            byte[] m405 = Encoding.UTF8.GetBytes(
+                JsonSerializer.Serialize(new { erro = "Use POST para iniciar stream." }, _jsonOpts));
+            res.ContentLength64 = m405.Length;
+            res.OutputStream.Write(m405, 0, m405.Length);
+            res.Close();
+            return;
+        }
+
         try
         {
-            string path = req.Url?.AbsolutePath.TrimEnd('/') ?? "/";
-            var query   = req.QueryString;
+            var query = req.QueryString;
 
             string json = path switch
             {
                 "/api/sensores"      => await HandleSensores(),
                 "/api/dados"         => await HandleDados(query),
                 "/api/alarmes"       => await HandleAlarmes(query),
+                "/api/anomalias"     => await HandleAnomalias(query),
+                "/api/ml/status"     => await HandleMlStatus(),
                 "/api/analise"       => await HandleAnalise(query),
                 "/api/padroes"       => await HandlePadroes(query),
                 "/api/previsao"      => await HandlePrevisao(query),
-                "/api/stream/start"  => await HandleStreamStart(query),
+                "/api/stream/start"  => await HandleStreamStart(req),
                 "/api/stream/stop"   => HandleStreamStop(query),
                 "/api/stream/estado" => HandleStreamEstado(),
                 "/api/shutdown"      => HandleShutdown(),
@@ -123,10 +174,10 @@ partial class ServerCentral
     static async Task<string> HandleSensores()
     {
         var lista = new List<object>();
-        using var conn = new NpgsqlConnection(connectionString);
+        await using var conn = new NpgsqlConnection(connectionString);
         await conn.OpenAsync();
 
-        using var cmd = conn.CreateCommand();
+        await using var cmd = conn.CreateCommand();
         cmd.CommandText = @"
             SELECT s.sensor_id, s.zona, s.tipos, s.video_stream, s.status, s.ultima_sync,
                    COUNT(l.id) FILTER (WHERE l.is_alarm) AS total_alarmes
@@ -135,7 +186,7 @@ partial class ServerCentral
             GROUP BY s.sensor_id, s.zona, s.tipos, s.video_stream, s.status, s.ultima_sync
             ORDER BY s.sensor_id";
 
-        using var reader = await cmd.ExecuteReaderAsync();
+        await using var reader = await cmd.ExecuteReaderAsync();
         while (await reader.ReadAsync())
         {
             string sId = reader.GetString(0);
@@ -143,7 +194,7 @@ partial class ServerCentral
             {
                 sensorId      = sId,
                 zona          = reader.GetString(1),
-                tipos         = reader.IsDBNull(2) ? "" : reader.GetString(2),
+                tipos         = reader.IsDBNull(2) ? "" : reader.GetString(2).Trim('[', ']'),
                 videoStream   = reader.GetBoolean(3),
                 status        = reader.IsDBNull(4) ? "desconhecido" : reader.GetString(4),
                 ultimaLeitura = reader.IsDBNull(5) ? "" : reader.GetDateTime(5).ToString("yyyy-MM-dd HH:mm:ss"),
@@ -165,11 +216,11 @@ partial class ServerCentral
         int    limite = int.TryParse(q["limite"], out int l) ? Math.Min(l, 5000) : 200;
 
         var rows = new List<object>();
-        using var conn = new NpgsqlConnection(connectionString);
+        await using var conn = new NpgsqlConnection(connectionString);
         await conn.OpenAsync();
 
         string sql = "SELECT gateway_id, sensor_id, zona, tipo_dado, valor, timestamp, is_alarm, qualidade FROM leituras WHERE 1=1";
-        using var cmd = conn.CreateCommand();
+        await using var cmd = conn.CreateCommand();
         if (!string.IsNullOrEmpty(zona))   { sql += " AND zona=@zona";       cmd.Parameters.AddWithValue("@zona",   zona); }
         if (!string.IsNullOrEmpty(tipo))   { sql += " AND tipo_dado=@tipo";  cmd.Parameters.AddWithValue("@tipo",   tipo); }
         if (!string.IsNullOrEmpty(sensor)) { sql += " AND sensor_id=@sensor"; cmd.Parameters.AddWithValue("@sensor", sensor); }
@@ -181,7 +232,7 @@ partial class ServerCentral
         sql += $" ORDER BY id DESC LIMIT {limite}";
         cmd.CommandText = sql;
 
-        using var reader = await cmd.ExecuteReaderAsync();
+        await using var reader = await cmd.ExecuteReaderAsync();
         while (await reader.ReadAsync())
             rows.Add(new
             {
@@ -206,18 +257,18 @@ partial class ServerCentral
         int    limite = int.TryParse(q["limite"], out int l) ? Math.Min(l, 1000) : 50;
 
         var rows = new List<object>();
-        using var conn = new NpgsqlConnection(connectionString);
+        await using var conn = new NpgsqlConnection(connectionString);
         await conn.OpenAsync();
 
         string sql = "SELECT gateway_id, sensor_id, zona, tipo_dado, valor, timestamp FROM leituras WHERE is_alarm = TRUE";
-        using var cmd = conn.CreateCommand();
+        await using var cmd = conn.CreateCommand();
         if (!string.IsNullOrEmpty(zona)) { sql += " AND zona=@zona";      cmd.Parameters.AddWithValue("@zona", zona); }
         if (!string.IsNullOrEmpty(tipo)) { sql += " AND tipo_dado=@tipo"; cmd.Parameters.AddWithValue("@tipo", tipo); }
 
         sql += $" ORDER BY id DESC LIMIT {limite}";
         cmd.CommandText = sql;
 
-        using var reader = await cmd.ExecuteReaderAsync();
+        await using var reader = await cmd.ExecuteReaderAsync();
         while (await reader.ReadAsync())
             rows.Add(new
             {
@@ -230,6 +281,63 @@ partial class ServerCentral
             });
 
         return JsonSerializer.Serialize(rows, _jsonOpts);
+    }
+
+    // GET /api/anomalias?zona=&tipo=&min_score=0.5&limite=100
+    static async Task<string> HandleAnomalias(System.Collections.Specialized.NameValueCollection q)
+    {
+        string zona     = q["zona"] ?? "";
+        string tipo     = q["tipo"] ?? "";
+        float  minScore = float.TryParse(q["min_score"], System.Globalization.NumberStyles.Any,
+                              System.Globalization.CultureInfo.InvariantCulture, out float ms) ? ms : 0.5f;
+        int    limite   = int.TryParse(q["limite"], out int l) ? Math.Min(l, 500) : 100;
+
+        var rows = new List<object>();
+        await using var conn = new NpgsqlConnection(connectionString);
+        await conn.OpenAsync();
+
+        string sql = "SELECT gateway_id, sensor_id, zona, tipo_dado, valor, timestamp, anomaly_score " +
+                     "FROM leituras WHERE anomaly_score >= @minScore";
+        await using var cmd = conn.CreateCommand();
+        cmd.Parameters.AddWithValue("@minScore", minScore);
+        if (!string.IsNullOrEmpty(zona)) { sql += " AND zona=@zona";      cmd.Parameters.AddWithValue("@zona", zona); }
+        if (!string.IsNullOrEmpty(tipo)) { sql += " AND tipo_dado=@tipo"; cmd.Parameters.AddWithValue("@tipo", tipo); }
+        sql += $" ORDER BY anomaly_score DESC, id DESC LIMIT {limite}";
+        cmd.CommandText = sql;
+
+        await using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+            rows.Add(new
+            {
+                gatewayId    = reader.IsDBNull(0) ? "" : reader.GetString(0),
+                sensorId     = reader.IsDBNull(1) ? "" : reader.GetString(1),
+                zona         = reader.IsDBNull(2) ? "" : reader.GetString(2),
+                tipoDado     = reader.IsDBNull(3) ? "" : reader.GetString(3),
+                valor        = reader.IsDBNull(4) ? "0" : reader.GetDecimal(4).ToString(CultureInfo.InvariantCulture),
+                timestamp    = reader.IsDBNull(5) ? "" : reader.GetDateTime(5).ToString("yyyy-MM-dd HH:mm:ss"),
+                anomalyScore = reader.IsDBNull(6) ? 0.0 : (double)reader.GetFloat(6)
+            });
+
+        return JsonSerializer.Serialize(rows, _jsonOpts);
+    }
+
+    // GET /api/ml/status — returns whether the Isolation Forest is warm (has scored any reading recently)
+    static async Task<string> HandleMlStatus()
+    {
+        try
+        {
+            await using var conn = new NpgsqlConnection(connectionString);
+            await conn.OpenAsync();
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = "SELECT EXISTS(SELECT 1 FROM leituras WHERE anomaly_score > 0 AND timestamp > NOW() - INTERVAL '10 minutes')";
+            var result  = await cmd.ExecuteScalarAsync();
+            bool aquecido = result is bool b && b;
+            return JsonSerializer.Serialize(new { aquecido }, _jsonOpts);
+        }
+        catch (Exception ex)
+        {
+            return JsonSerializer.Serialize(new { aquecido = false, erro = ex.Message }, _jsonOpts);
+        }
     }
 
     // GET /api/analise?zona=&tipo=&sensor=&inicio=&fim=
@@ -352,10 +460,18 @@ partial class ServerCentral
         return JsonSerializer.Serialize(new { ok = true }, _jsonOpts);
     }
 
-    // GET /api/stream/start?sensor=
-    static async Task<string> HandleStreamStart(System.Collections.Specialized.NameValueCollection q)
+    // POST /api/stream/start  body: { "sensor": "<id>" }
+    static async Task<string> HandleStreamStart(HttpListenerRequest req)
     {
-        string sensorId = q["sensor"] ?? "";
+        string sensorId;
+        try
+        {
+            using var bodyReader = new System.IO.StreamReader(req.InputStream, req.ContentEncoding);
+            string body = await bodyReader.ReadToEndAsync();
+            var doc = JsonDocument.Parse(body);
+            sensorId = doc.RootElement.GetProperty("sensor").GetString() ?? "";
+        }
+        catch { sensorId = ""; }
         if (string.IsNullOrEmpty(sensorId))
             return JsonSerializer.Serialize(new { erro = "Parâmetro 'sensor' obrigatório." }, _jsonOpts);
 
@@ -379,6 +495,69 @@ partial class ServerCentral
     {
         PararStream();
         return JsonSerializer.Serialize(new { ok = true }, _jsonOpts);
+    }
+
+    // POST /api/login
+    static async Task<(int status, string json)> HandleLogin(HttpListenerRequest req)
+    {
+        using var reader = new System.IO.StreamReader(req.InputStream, req.ContentEncoding);
+        string body = await reader.ReadToEndAsync();
+        try
+        {
+            var doc     = JsonDocument.Parse(body);
+            string user = doc.RootElement.GetProperty("username").GetString() ?? "";
+            string pass = doc.RootElement.GetProperty("password").GetString() ?? "";
+
+            if (_credenciais.TryGetValue(user, out string? expected) && expected == pass)
+                return (200, JsonSerializer.Serialize(new { token = GerarToken(user), username = user }, _jsonOpts));
+
+            return (401, JsonSerializer.Serialize(new { erro = "Credenciais inválidas." }, _jsonOpts));
+        }
+        catch
+        {
+            return (400, JsonSerializer.Serialize(new { erro = "Body inválido." }, _jsonOpts));
+        }
+    }
+
+    static string GerarToken(string username)
+    {
+        var key   = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwtSecret));
+        var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+        var token = new JwtSecurityToken(
+            issuer:             "one-health",
+            audience:           "one-health",
+            claims:             new[] { new Claim(ClaimTypes.Name, username) },
+            expires:            DateTime.UtcNow.AddHours(24),
+            signingCredentials: creds
+        );
+        return new JwtSecurityTokenHandler().WriteToken(token);
+    }
+
+    static bool ValidarToken(HttpListenerRequest req)
+    {
+        string? auth = req.Headers["Authorization"];
+        if (string.IsNullOrEmpty(auth) || !auth.StartsWith("Bearer "))
+            return false;
+
+        string tokenStr = auth[7..];
+        var handler = new JwtSecurityTokenHandler();
+        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwtSecret));
+        try
+        {
+            handler.ValidateToken(tokenStr, new TokenValidationParameters
+            {
+                ValidateIssuerSigningKey = true,
+                IssuerSigningKey        = key,
+                ValidateIssuer          = true,
+                ValidIssuer             = "one-health",
+                ValidateAudience        = true,
+                ValidAudience           = "one-health",
+                ValidateLifetime        = true,
+                ClockSkew               = TimeSpan.Zero
+            }, out _);
+            return true;
+        }
+        catch { return false; }
     }
 
     // GET /api/stream/estado — debug: what does the server know about streams?

@@ -7,9 +7,10 @@ package analysis;
 // Invocado pelo Servidor para análise estatística e deteção de padrões.
 // O serviço corre em Python com pandas/numpy/scipy.
 service AnaliseService {
-  rpc AnalisarZona     (PedidoAnalise)   returns (ResultadoAnalise);
-  rpc DetectarPadroes  (PedidoAnalise)   returns (ResultadoPadroes);
-  rpc PreviRisco       (PedidoPrevisao)  returns (ResultadoPrevisao);
+  rpc AnalisarZona     (PedidoAnalise)    returns (ResultadoAnalise);
+  rpc DetectarPadroes  (PedidoAnalise)    returns (ResultadoPadroes);
+  rpc PreviRisco       (PedidoPrevisao)   returns (ResultadoPrevisao);
+  rpc ScoreBatch       (PedidoScoreBatch) returns (ResultadoScoreBatch);
 }
 
 // --- Pedidos ---
@@ -56,10 +57,38 @@ message Padrao {
 }
 
 message ResultadoPrevisao {
-  string          zona            = 1;
-  string          tipo_dado       = 2;
+  string          zona              = 1;
+  string          tipo_dado         = 2;
   repeated double valores_previstos = 3;
-  double          risco_saude     = 4;  // 0.0 – 1.0
-  string          recomendacao    = 5;
-  string          timestamp       = 6;
+  double          risco_saude       = 4;  // 0.0 – 1.0
+  string          recomendacao      = 5;
+  string          timestamp         = 6;
+}
+
+// --- ML anomaly scoring ---
+
+message PedidoScoreBatch {
+  string              gateway_id = 1;
+  repeated LeituraScore leituras = 2;
+}
+
+message LeituraScore {
+  string sensor_id  = 1;
+  string zona       = 2;
+  string tipo       = 3;
+  double valor      = 4;
+  string timestamp  = 5;
+}
+
+message ResultadoScoreBatch {
+  repeated AnomaliaInfo anomalias       = 1;
+  bool                  modelo_aquecido = 2;
+}
+
+message AnomaliaInfo {
+  string sensor_id   = 1;
+  string tipo        = 2;
+  double score       = 3;
+  bool   is_anomalia = 4;
+  string motivo      = 5;
 }

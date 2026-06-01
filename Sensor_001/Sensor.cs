@@ -65,8 +65,8 @@ namespace sensor
         private static readonly JsonSerializerOptions _jsonRead  = new() { PropertyNameCaseInsensitive = true };
         private static readonly JsonSerializerOptions _jsonWrite = new() { WriteIndented = true };
 
-        private static bool   _isOnline    = false;
-        private static bool   _encerrando  = false;
+        private static volatile bool _isOnline   = false;
+        private static volatile bool _encerrando = false;
         private static string _brokerLabel = "";
         private static string _zonaType    = "residencial";
 

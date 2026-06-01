@@ -1,35 +1,101 @@
 """
 ONE HEALTH — Serviço de Análise e Previsão (gRPC / Python)
-Invocado pelo Servidor Central para análise estatística e deteção de padrões.
 
 Gerar código gRPC a partir do proto (executar uma vez):
-    python -m grpc_tools.protoc -I../protos --python_out=. --grpc_python_out=. ../protos/analysis.proto
+    python -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. analysis.proto
 """
 
 import grpc
 import os
+import time
+import threading
 from concurrent import futures
+from collections import defaultdict
+
 import analysis_pb2
 import analysis_pb2_grpc
 import psycopg2
 from psycopg2 import pool as pg_pool
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+from sklearn.ensemble import IsolationForest
+from datetime import datetime, timezone
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@localhost/one_health")
-PORT    = 50052
+PORT         = 50052
 
 _pool: pg_pool.ThreadedConnectionPool = None
 
-# Thresholds de risco por tipo de dado (valores médios considerados preocupantes)
+# ── Isolation Forest models ────────────────────────────────────────────────────
+_models: dict       = {}   # tipo -> fitted IsolationForest
+_model_lock         = threading.Lock()
+TIPOS_SUPORTADOS    = ["TEMP", "HUM", "CO2", "RUIDO", "LUMIN", "PART", "NO2", "O3", "WIND"]
+MIN_AMOSTRAS        = 1440  # model considered warm above this count
+RETRAIN_INTERVAL    = 300  # seconds between background retrains
+CYCLE_SECS          = 7200  # simulated day cycle length in real seconds (2 hours)
+
+
+def _hora_simulada_de_dt(dt: datetime) -> float:
+    # Use Unix epoch (same baseline as SQL's EXTRACT(epoch FROM timestamp))
+    # so training and scoring always agree, regardless of timezone offset.
+    return (int(dt.timestamp()) % CYCLE_SECS) / CYCLE_SECS * 24.0
+
+def _carregar_amostras_treino(tipo: str, limit: int = 2000) -> np.ndarray:
+    conn = _pool.getconn()
+    try:
+        df = pd.read_sql_query(
+            "SELECT valor, "
+            "(EXTRACT(epoch FROM timestamp)::bigint %% %s) / %s::float * 24 AS sim_h "
+            "FROM leituras "
+            "WHERE tipo_dado = %s AND is_alarm = FALSE "
+            "ORDER BY timestamp DESC LIMIT %s",
+            conn, params=[CYCLE_SECS, CYCLE_SECS, tipo, limit]
+        )
+    finally:
+        _pool.putconn(conn)
+    df = df.dropna(subset=["valor", "sim_h"])
+    vals  = df["valor"].values
+    sim_h = df["sim_h"].values
+    sin_h = np.sin(2 * np.pi * sim_h / 24.0)
+    cos_h = np.cos(2 * np.pi * sim_h / 24.0)
+    return np.column_stack([vals, sin_h, cos_h])
+
+def _treinar_modelos():
+    for tipo in TIPOS_SUPORTADOS:
+        try:
+            X = _carregar_amostras_treino(tipo)
+            if len(X) < MIN_AMOSTRAS:
+                continue
+            modelo = IsolationForest(n_estimators=100, contamination="auto", random_state=42, n_jobs=-1)
+            modelo.fit(X)
+            with _model_lock:
+                _models[tipo] = modelo
+            print(f"[ML] Modelo {tipo} treinado com {len(X)} amostras.", flush=True)
+        except Exception as e:
+            print(f"[ML] Erro a treinar {tipo}: {e}", flush=True)
+
+def _loop_retreino():
+    time.sleep(30)
+    while True:
+        _treinar_modelos()
+        time.sleep(RETRAIN_INTERVAL)
+
+# ── Risk thresholds ────────────────────────────────────────────────────────────
+LIMITES_MIN = {
+    "TEMP": -50.0, "HUM": 0.0, "CO2": 0.0, "RUIDO": 0.0,
+    "LUMIN": 0.0,  "PART": 0.0, "NO2": 0.0, "O3": 0.0, "WIND": 0.0,
+}
+
 RISCO_THRESHOLDS = {
-    "TEMP":  {"baixo": 28.0,  "medio": 33.0,  "alto": 38.0},
-    "HUM":   {"baixo": 30.0,  "medio": 20.0,  "alto": 10.0},   # invertido: baixa humidade = risco
-    "CO2":   {"baixo": 800.0, "medio": 1200.0, "alto": 1800.0},
-    "RUIDO": {"baixo": 60.0,  "medio": 75.0,  "alto": 85.0},
-    "LUMIN": {"baixo": 200.0, "medio": 50.0,  "alto": 10.0},   # invertido: pouca luz = risco
-    "PART":  {"baixo": 35.0,  "medio": 75.0,  "alto": 150.0},
+    "TEMP":  {"baixo": 28.0,   "medio": 33.0,   "alto": 38.0},
+    "HUM":   {"baixo": 30.0,   "medio": 20.0,   "alto": 10.0},   # invertido
+    "CO2":   {"baixo": 800.0,  "medio": 1200.0, "alto": 1800.0},
+    "RUIDO": {"baixo": 60.0,   "medio": 75.0,   "alto": 85.0},
+    "LUMIN": {"baixo": 200.0,  "medio": 50.0,   "alto": 10.0},   # invertido
+    "PART":  {"baixo": 35.0,   "medio": 75.0,   "alto": 150.0},
+    "NO2":   {"baixo": 100.0,  "medio": 200.0,  "alto": 400.0},
+    "O3":    {"baixo": 60.0,   "medio": 120.0,  "alto": 200.0},
+    "WIND":  {"baixo": 50.0,   "medio": 75.0,   "alto": 100.0},
 }
 
 
@@ -38,18 +104,11 @@ class AnaliseServicer(analysis_pb2_grpc.AnaliseServiceServicer):
     def _carregar_dados(self, zona, tipo_dado, sensor_id, data_inicio, data_fim):
         query = "SELECT valor, timestamp, is_alarm FROM leituras WHERE 1=1"
         params = []
-
-        if zona:
-            query += " AND zona = %s";           params.append(zona)
-        if tipo_dado:
-            query += " AND tipo_dado = %s";      params.append(tipo_dado)
-        if sensor_id:
-            query += " AND sensor_id = %s";      params.append(sensor_id)
-        if data_inicio:
-            query += " AND timestamp >= %s";     params.append(data_inicio)
-        if data_fim:
-            query += " AND timestamp <= %s";     params.append(data_fim)
-
+        if zona:        query += " AND zona = %s";       params.append(zona)
+        if tipo_dado:   query += " AND tipo_dado = %s";  params.append(tipo_dado)
+        if sensor_id:   query += " AND sensor_id = %s";  params.append(sensor_id)
+        if data_inicio: query += " AND timestamp >= %s"; params.append(data_inicio)
+        if data_fim:    query += " AND timestamp <= %s"; params.append(data_fim)
         query += " ORDER BY timestamp DESC LIMIT 10000"
 
         conn = _pool.getconn()
@@ -58,17 +117,84 @@ class AnaliseServicer(analysis_pb2_grpc.AnaliseServiceServicer):
         finally:
             _pool.putconn(conn)
         df = df.rename(columns={"valor": "Valor", "timestamp": "Timestamp", "is_alarm": "IsAlarm"})
-        df["Valor"] = pd.to_numeric(df["Valor"], errors="coerce")
+        df["Valor"]     = pd.to_numeric(df["Valor"], errors="coerce")
         df["Timestamp"] = pd.to_datetime(df["Timestamp"], errors="coerce")
         df = df.dropna(subset=["Valor"])
         return df.sort_values("Timestamp").reset_index(drop=True)
 
+    # ── ScoreBatch ─────────────────────────────────────────────────────────────
+    def ScoreBatch(self, request, context):
+        por_tipo = defaultdict(list)  # tipo -> [(index, valor, timestamp)]
+        for i, l in enumerate(request.leituras):
+            por_tipo[l.tipo.upper()].append((i, l.valor, l.timestamp))
+
+        resultados  = [None] * len(request.leituras)
+        algum_modelo = False
+
+        with _model_lock:
+            snapshot = dict(_models)
+
+        for tipo, items in por_tipo.items():
+            modelo = snapshot.get(tipo)
+            if modelo is None:
+                continue
+            algum_modelo = True
+
+            vals, sin_h, cos_h = [], [], []
+            for _, v, ts in items:
+                try:
+                    dt = datetime.fromisoformat(ts.replace("Z", "+00:00")) if ts else datetime.now(timezone.utc)
+                except Exception:
+                    dt = datetime.now(timezone.utc)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                h = _hora_simulada_de_dt(dt)
+                vals.append(v)
+                sin_h.append(np.sin(2 * np.pi * h / 24.0))
+                cos_h.append(np.cos(2 * np.pi * h / 24.0))
+
+            X = np.column_stack([vals, sin_h, cos_h])
+            try:
+                decisions = modelo.decision_function(X)
+            except Exception:
+                continue
+
+            print(f"[ML] {tipo}: decisions={[round(float(d),3) for d in decisions]}", flush=True)
+            for j in range(len(items)):
+                idx      = items[j][0]
+                decision = decisions[j]
+                # decision ~ [-0.15, +0.15]: 0.0 = exact boundary
+                # map so 0.0 -> 0.5, -0.15 -> 0.95, +0.15 -> 0.05
+                score       = float(np.clip(0.5 - (decision * 3.0), 0.0, 1.0))
+                is_anomalia = bool(decision < 0)
+                leitura     = request.leituras[idx]
+                resultados[idx] = analysis_pb2.AnomaliaInfo(
+                    sensor_id   = leitura.sensor_id,
+                    tipo        = leitura.tipo,
+                    score       = score,
+                    is_anomalia = is_anomalia,
+                    motivo      = f"IF score={score:.2f}" if is_anomalia else ""
+                )
+
+        anomalias = []
+        for i, leitura in enumerate(request.leituras):
+            anomalias.append(resultados[i] if resultados[i] is not None else
+                analysis_pb2.AnomaliaInfo(
+                    sensor_id=leitura.sensor_id, tipo=leitura.tipo,
+                    score=0.0, is_anomalia=False, motivo=""
+                ))
+
+        return analysis_pb2.ResultadoScoreBatch(
+            anomalias=anomalias,
+            modelo_aquecido=algum_modelo
+        )
+
+    # ── AnalisarZona ───────────────────────────────────────────────────────────
     def AnalisarZona(self, request, context):
         df = self._carregar_dados(
             request.zona, request.tipo_dado, request.sensor_id,
             request.data_inicio, request.data_fim
         )
-
         if df.empty:
             context.set_code(grpc.StatusCode.NOT_FOUND)
             context.set_details("Sem dados para os filtros fornecidos.")
@@ -86,12 +212,12 @@ class AnaliseServicer(analysis_pb2_grpc.AnaliseServiceServicer):
             timestamp      = datetime.now().isoformat()
         )
 
+    # ── DetectarPadroes ────────────────────────────────────────────────────────
     def DetectarPadroes(self, request, context):
         df = self._carregar_dados(
             request.zona, request.tipo_dado, request.sensor_id,
             request.data_inicio, request.data_fim
         )
-
         padroes = []
 
         if df.empty or df["Timestamp"].isna().all():
@@ -102,24 +228,20 @@ class AnaliseServicer(analysis_pb2_grpc.AnaliseServiceServicer):
 
         df = df.dropna(subset=["Timestamp"])
         df["hora"] = df["Timestamp"].dt.hour
-
-        # Hora de pico (maior média horária)
         medias_hora = df.groupby("hora")["Valor"].mean()
+
         if not medias_hora.empty:
-            hora_pico = int(medias_hora.idxmax())
-            valor_pico = float(medias_hora.max())
+            hora_pico    = int(medias_hora.idxmax())
+            valor_pico   = float(medias_hora.max())
             valor_global = float(df["Valor"].mean())
-            desvio_relativo = abs(valor_pico - valor_global) / (valor_global + 1e-9)
-            confianca = min(1.0, desvio_relativo * 2)
+            confianca    = min(1.0, abs(valor_pico - valor_global) / (valor_global + 1e-9) * 2)
             padroes.append(analysis_pb2.Padrao(
                 descricao=f"Pico diário às {hora_pico:02d}h (média={valor_pico:.1f})",
                 confianca=round(confianca, 2),
                 hora_pico=f"{hora_pico:02d}:00"
             ))
 
-        # Hora de mínimo
-        if not medias_hora.empty:
-            hora_min = int(medias_hora.idxmin())
+            hora_min  = int(medias_hora.idxmin())
             valor_min = float(medias_hora.min())
             padroes.append(analysis_pb2.Padrao(
                 descricao=f"Mínimo diário às {hora_min:02d}h (média={valor_min:.1f})",
@@ -127,7 +249,6 @@ class AnaliseServicer(analysis_pb2_grpc.AnaliseServiceServicer):
                 hora_pico=f"{hora_min:02d}:00"
             ))
 
-        # Taxa de alarmes
         taxa_alarmes = float(df["IsAlarm"].mean()) if "IsAlarm" in df.columns else 0.0
         if taxa_alarmes > 0.05:
             padroes.append(analysis_pb2.Padrao(
@@ -136,52 +257,65 @@ class AnaliseServicer(analysis_pb2_grpc.AnaliseServiceServicer):
                 hora_pico=""
             ))
 
-        # Tendência crescente/decrescente (regressão linear simples)
         if len(df) >= 10:
-            x = np.arange(len(df))
-            y = df["Valor"].values
-            coef = np.polyfit(x, y, 1)
-            slope = coef[0]
-            if abs(slope) > 0.01:
-                direcao = "crescente" if slope > 0 else "decrescente"
-                confianca_tendencia = min(1.0, abs(slope) * 10)
+            x    = np.arange(len(df))
+            coef = np.polyfit(x, df["Valor"].values, 1)
+            if abs(coef[0]) > 0.01:
+                direcao = "crescente" if coef[0] > 0 else "decrescente"
                 padroes.append(analysis_pb2.Padrao(
-                    descricao=f"Tendência {direcao} (Δ={slope:+.3f}/leitura)",
-                    confianca=round(confianca_tendencia, 2),
+                    descricao=f"Tendência {direcao} (Δ={coef[0]:+.3f}/leitura)",
+                    confianca=round(min(1.0, abs(coef[0]) * 10), 2),
+                    hora_pico=""
+                ))
+
+        # ML anomaly rate from stored scores
+        conn = _pool.getconn()
+        try:
+            zona_filter   = f"AND zona = %s"     if request.zona     else ""
+            tipo_filter   = f"AND tipo_dado = %s" if request.tipo_dado else ""
+            params        = [p for p in [request.zona, request.tipo_dado] if p]
+            df_ml = pd.read_sql_query(
+                f"SELECT anomaly_score FROM leituras WHERE anomaly_score IS NOT NULL "
+                f"{zona_filter} {tipo_filter} ORDER BY timestamp DESC LIMIT 500",
+                conn, params=params
+            )
+        finally:
+            _pool.putconn(conn)
+
+        if not df_ml.empty:
+            taxa_ml = float((df_ml["anomaly_score"] >= 0.6).mean())
+            if taxa_ml > 0.05:
+                padroes.append(analysis_pb2.Padrao(
+                    descricao=f"ML: {taxa_ml*100:.1f}% leituras com score de anomalia ≥ 0.6",
+                    confianca=round(min(1.0, taxa_ml * 4), 2),
                     hora_pico=""
                 ))
 
         return analysis_pb2.ResultadoPadroes(
-            zona=request.zona,
-            tipo_dado=request.tipo_dado,
-            padroes=padroes,
-            timestamp=datetime.now().isoformat()
+            zona=request.zona, tipo_dado=request.tipo_dado,
+            padroes=padroes, timestamp=datetime.now().isoformat()
         )
 
+    # ── PreviRisco ─────────────────────────────────────────────────────────────
     def PreviRisco(self, request, context):
         df = self._carregar_dados(request.zona, request.tipo_dado, request.sensor_id, "", "")
 
         if df.empty or len(df) < 5:
             return analysis_pb2.ResultadoPrevisao(
-                zona=request.zona,
-                tipo_dado=request.tipo_dado,
-                valores_previstos=[],
-                risco_saude=0.0,
+                zona=request.zona, tipo_dado=request.tipo_dado,
+                valores_previstos=[], risco_saude=0.0,
                 recomendacao="Dados insuficientes para previsão (mínimo 5 leituras).",
                 timestamp=datetime.now().isoformat()
             )
 
         valores = df["Valor"].values
-        n = len(valores)
-        horas = request.horas_futuras if request.horas_futuras > 0 else 6
+        n       = len(valores)
+        horas   = request.horas_futuras if request.horas_futuras > 0 else 6
 
-        # Regressão linear para extrapolação
-        x = np.arange(n)
+        x    = np.arange(n)
         coef = np.polyfit(x, valores, 1)
-        slope, intercept = coef
 
-        # Estimar quantas leituras por hora (usar timestamps se disponíveis)
-        leituras_por_hora = 12  # default
+        leituras_por_hora = 12
         df_ts = df.dropna(subset=["Timestamp"])
         if len(df_ts) >= 2:
             span = (df_ts["Timestamp"].max() - df_ts["Timestamp"].min()).total_seconds()
@@ -189,27 +323,23 @@ class AnaliseServicer(analysis_pb2_grpc.AnaliseServiceServicer):
                 leituras_por_hora = max(1, int(n / (span / 3600)))
 
         passos_futuros = horas * leituras_por_hora
-        x_futuro = np.arange(n, n + passos_futuros)
-        previstos = np.polyval(coef, x_futuro)
+        previstos      = np.polyval(coef, np.arange(n, n + passos_futuros))
+        media_recente  = float(np.mean(valores[-min(20, n):]))
+        previstos      = previstos * 0.6 + media_recente * 0.4
+        previstos      = np.maximum(previstos, LIMITES_MIN.get(request.tipo_dado.upper(), 0.0))
 
-        # Amortizar para que não extrapole demais — misturar com média recente
-        media_recente = float(np.mean(valores[-min(20, n):]))
-        previstos = previstos * 0.6 + media_recente * 0.4
+        valor_medio   = float(np.mean(previstos))
+        taxa_alarmes  = float(df["IsAlarm"].mean()) if "IsAlarm" in df.columns else 0.0
+        risco         = _calcular_risco(request.tipo_dado.upper(), valor_medio,
+                                        float(np.std(valores)), taxa_alarmes)
+        recomendacao  = _gerar_recomendacao(request.tipo_dado.upper(), risco, valor_medio, coef[0])
 
-        # Calcular risco com base no valor previsto médio
-        valor_medio_previsto = float(np.mean(previstos))
-        risco = _calcular_risco(request.tipo_dado.upper(), valor_medio_previsto,
-                                float(np.std(valores)), float(df["IsAlarm"].mean()) if "IsAlarm" in df.columns else 0.0)
-
-        recomendacao = _gerar_recomendacao(request.tipo_dado.upper(), risco, valor_medio_previsto, slope)
-
-        # Devolver apenas um valor previsto por hora (sub-amostrado)
-        step = max(1, passos_futuros // horas)
-        previstos_por_hora = [round(float(previstos[i * step]), 2) for i in range(horas) if i * step < len(previstos)]
+        step              = max(1, passos_futuros // horas)
+        previstos_por_hora = [round(float(previstos[i * step]), 2)
+                              for i in range(horas) if i * step < len(previstos)]
 
         return analysis_pb2.ResultadoPrevisao(
-            zona=request.zona,
-            tipo_dado=request.tipo_dado,
+            zona=request.zona, tipo_dado=request.tipo_dado,
             valores_previstos=previstos_por_hora,
             risco_saude=round(risco, 3),
             recomendacao=recomendacao,
@@ -217,68 +347,70 @@ class AnaliseServicer(analysis_pb2_grpc.AnaliseServiceServicer):
         )
 
 
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
 def _calcular_risco(tipo: str, media: float, desvio: float, taxa_alarmes: float) -> float:
     thresh = RISCO_THRESHOLDS.get(tipo)
     if thresh is None:
         return min(1.0, taxa_alarmes * 2)
 
-    # Tipos onde alto valor = maior risco
-    if tipo in ("TEMP", "CO2", "RUIDO", "PART"):
-        if media >= thresh["alto"]:   risco_valor = 1.0
+    if tipo in ("TEMP", "CO2", "RUIDO", "PART", "NO2", "O3", "WIND"):
+        if   media >= thresh["alto"]:  risco_valor = 1.0
         elif media >= thresh["medio"]: risco_valor = 0.6
         elif media >= thresh["baixo"]: risco_valor = 0.3
         else:                          risco_valor = 0.0
-    # Tipos onde baixo valor = maior risco (HUM, LUMIN)
-    else:
-        if media <= thresh["alto"]:   risco_valor = 1.0
+    else:  # HUM, LUMIN — invertido
+        if   media <= thresh["alto"]:  risco_valor = 1.0
         elif media <= thresh["medio"]: risco_valor = 0.6
         elif media <= thresh["baixo"]: risco_valor = 0.3
         else:                          risco_valor = 0.0
 
-    # Desvio elevado agrava o risco
-    risco_variabilidade = min(0.3, desvio / (abs(media) + 1) * 0.5)
-    # Taxa de alarmes histórica agrava o risco
-    risco_alarmes = min(0.2, taxa_alarmes)
-
-    return min(1.0, risco_valor + risco_variabilidade + risco_alarmes)
+    return min(1.0, risco_valor
+               + min(0.3, desvio / (abs(media) + 1) * 0.5)
+               + min(0.2, taxa_alarmes))
 
 
 def _gerar_recomendacao(tipo: str, risco: float, media: float, tendencia: float) -> str:
     labels = {
-        "TEMP":  ("temperatura", "°C"),
-        "HUM":   ("humidade",    "%"),
-        "CO2":   ("CO₂",         "ppm"),
-        "RUIDO": ("ruído",       "dB"),
-        "LUMIN": ("luminosidade","lux"),
-        "PART":  ("partículas",  "µg/m³"),
+        "TEMP":  ("temperatura",          "°C"),
+        "HUM":   ("humidade",             "%"),
+        "CO2":   ("CO₂",                  "ppm"),
+        "RUIDO": ("ruído",                "dB"),
+        "LUMIN": ("luminosidade",         "lux"),
+        "PART":  ("partículas",           "µg/m³"),
+        "NO2":   ("dióxido de azoto",     "µg/m³"),
+        "O3":    ("ozono",                "ppb"),
+        "WIND":  ("velocidade do vento",  "km/h"),
     }
     nome, unidade = labels.get(tipo, (tipo.lower(), ""))
 
-    if risco >= 0.8:
-        base = f"RISCO ALTO: {nome} prevista em {media:.1f}{unidade}. Intervenção imediata recomendada."
-    elif risco >= 0.5:
-        base = f"RISCO MÉDIO: {nome} prevista em {media:.1f}{unidade}. Monitorizar com atenção."
-    elif risco >= 0.2:
-        base = f"RISCO BAIXO: {nome} prevista em {media:.1f}{unidade}. Dentro dos parâmetros normais."
-    else:
-        base = f"SEM RISCO: {nome} prevista em {media:.1f}{unidade}. Condições ideais."
+    if   risco >= 0.8: base = f"RISCO ALTO: {nome} prevista em {media:.1f}{unidade}. Intervenção imediata recomendada."
+    elif risco >= 0.5: base = f"RISCO MÉDIO: {nome} prevista em {media:.1f}{unidade}. Monitorizar com atenção."
+    elif risco >= 0.2: base = f"RISCO BAIXO: {nome} prevista em {media:.1f}{unidade}. Dentro dos parâmetros normais."
+    else:              base = f"SEM RISCO: {nome} prevista em {media:.1f}{unidade}. Condições ideais."
 
     if abs(tendencia) > 0.05:
-        direcao = "aumento" if tendencia > 0 else "diminuição"
-        base += f" Tendência de {direcao} detectada."
-
+        base += f" Tendência de {'aumento' if tendencia > 0 else 'diminuição'} detectada."
     return base
 
 
+# ── Entry point ────────────────────────────────────────────────────────────────
+
 def serve():
     global _pool
-    _pool = pg_pool.ThreadedConnectionPool(minconn=1, maxconn=4, dsn=DATABASE_URL)
+    _pool = pg_pool.ThreadedConnectionPool(minconn=2, maxconn=8, dsn=DATABASE_URL)
 
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=4))
+    print("[ML] Treino inicial dos modelos...", flush=True)
+    _treinar_modelos()
+
+    t = threading.Thread(target=_loop_retreino, daemon=True, name="ML-Retreino")
+    t.start()
+
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=8))
     analysis_pb2_grpc.add_AnaliseServiceServicer_to_server(AnaliseServicer(), server)
     server.add_insecure_port(f"[::]:{PORT}")
     server.start()
-    print(f"[ONE HEALTH] Serviço de Análise activo na porta {PORT}")
+    print(f"[ONE HEALTH] Serviço de Análise activo na porta {PORT}", flush=True)
     server.wait_for_termination()
     _pool.closeall()
 

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "../api";
+import { api, auth } from "../api";
 import type { Sensor } from "../api";
 import "./SensorList.css";
 
@@ -38,13 +38,20 @@ export default function SensorList() {
     return () => clearInterval(id);
   }, []);
 
+  const authHeader = () => ({ Authorization: `Bearer ${auth.getToken() ?? ""}` });
+
   const toggleStream = async (s: Sensor) => {
     if (streamAtivo === s.sensorId) {
-      await fetch(`${BASE}/api/stream/stop?sensor=${s.sensorId}`);
+      await fetch(`${BASE}/api/stream/stop?sensor=${s.sensorId}`, { headers: authHeader() });
       setStreamAtivo(null);
     } else {
-      if (streamAtivo) await fetch(`${BASE}/api/stream/stop?sensor=${streamAtivo}`);
-      const res  = await fetch(`${BASE}/api/stream/start?sensor=${s.sensorId}`);
+      if (streamAtivo)
+        await fetch(`${BASE}/api/stream/stop?sensor=${streamAtivo}`, { headers: authHeader() });
+      const res  = await fetch(`${BASE}/api/stream/start`, {
+        method:  "POST",
+        headers: { "Content-Type": "application/json", ...authHeader() },
+        body:    JSON.stringify({ sensor: s.sensorId }),
+      });
       const json = await res.json();
       if (json.erro) { alert(`Erro stream: ${json.erro}`); return; }
       setStreamAtivo(s.sensorId);

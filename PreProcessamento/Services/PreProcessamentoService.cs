@@ -46,7 +46,7 @@ namespace PreProcessamento.Services
             _       => 0.10,
         };
 
-        private record BatchFlags(bool IsSpike, bool IsBloqueado, bool IsSuspeito);
+        private record BatchFlags(bool IsBloqueado, bool IsSuspeito);
         private record TsFlags(bool Futuro, bool Antigo, bool Desordem);
 
         public override Task<BlocoLeiturasProcessadas> NormalizarBloco(BlocoLeiturasBrutas request, ServerCallContext context)
@@ -69,7 +69,7 @@ namespace PreProcessamento.Services
                 return new TsFlags(futuro, antigo, desordem);
             }).ToList();
 
-            // Collect in-range values sorted for IQR
+            // Collect in-range values sorted for stuck-sensor range check
             var valoresValidos = provisorios
                 .Where(p => _intervalos.TryGetValue(p.Leitura.Tipo.ToUpper(), out var iv)
                             && p.Valor >= iv.Min && p.Valor <= iv.Max)
@@ -78,18 +78,6 @@ namespace PreProcessamento.Services
                 .ToList();
 
             bool temStats = valoresValidos.Count >= 4;
-
-            // Tukey IQR fences
-            double iqrLower = double.MinValue, iqrUpper = double.MaxValue;
-            if (temStats)
-            {
-                int    n   = valoresValidos.Count;
-                double q1  = valoresValidos[n / 4];
-                double q3  = valoresValidos[3 * n / 4];
-                double iqr = q3 - q1;
-                iqrLower   = q1 - 1.5 * iqr;
-                iqrUpper   = q3 + 1.5 * iqr;
-            }
 
             // Stuck sensor: check range of in-range values
             bool isBloqueado = false, isSuspeito = false;
@@ -105,9 +93,8 @@ namespace PreProcessamento.Services
             for (int i = 0; i < provisorios.Count; i++)
             {
                 var (leitura, valor, convertido) = provisorios[i];
-                bool isSpike = temStats && (valor < iqrLower || valor > iqrUpper);
                 resposta.Dados.Add(Processar(leitura, valor, convertido,
-                    new BatchFlags(isSpike, isBloqueado, isSuspeito), tsFlags[i]));
+                    new BatchFlags(isBloqueado, isSuspeito), tsFlags[i]));
             }
             return Task.FromResult(resposta);
         }
@@ -126,7 +113,7 @@ namespace PreProcessamento.Services
             );
 
             return Task.FromResult(Processar(request, valor, convertido,
-                new BatchFlags(false, false, false), tsf));
+                new BatchFlags(false, false), tsf));
         }
 
         private static double Converter(LeituraBruta request)
@@ -184,13 +171,6 @@ namespace PreProcessamento.Services
 
             if (valido)
             {
-                // Spike via IQR (Tukey fences)
-                if (bf.IsSpike)
-                {
-                    qualidade *= 0.60f;
-                    Anotar("Pico detectado (IQR)");
-                }
-
                 // Stuck sensor
                 if (bf.IsBloqueado)
                 {
