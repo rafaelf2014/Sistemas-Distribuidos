@@ -2,19 +2,12 @@ using System;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
-using System.Collections.Concurrent;
+using System.Text;
 using System.Threading;
+using RabbitMQ.Client;
 
 partial class MyTcpListener
 {
-    #region CAMPOS STREAM
-
-    // Preenchido pelo handler do servidor; consumido pelo próximo ACK ao sensor
-    static readonly ConcurrentDictionary<string, (string Ip, int Port)> _pendingStream = new();
-    static readonly ConcurrentDictionary<string, bool>                  _pendingStop   = new();
-
-    #endregion
-
     #region LISTENER DE COMANDOS DO SERVIDOR (PORTA 14001)
 
     static void IniciarListenerComandos()
@@ -23,6 +16,9 @@ partial class MyTcpListener
         listener.Start();
         RegistarLogEsquerda("Listener de comandos do servidor na porta 14001.");
 
+        // Aguarda ligação ao broker antes de aceitar comandos
+        while (!_isOnline) Thread.Sleep(100);
+
         while (_isOnline)
         {
             try
@@ -30,7 +26,7 @@ partial class MyTcpListener
                 TcpClient client = listener.AcceptTcpClient();
                 new Thread(() => HandleComandoServidor(client)) { IsBackground = true }.Start();
             }
-            catch { break; }
+            catch (Exception ex) { RegistarLogEsquerda($"[CMD] Listener error: {ex.Message}"); }
         }
     }
 
@@ -42,20 +38,20 @@ partial class MyTcpListener
             using var reader = new StreamReader(stream);
             using var writer = new StreamWriter(stream) { AutoFlush = true };
 
-            string linha = reader.ReadLine();
+            string? linha = reader.ReadLine();
             if (linha == null) return;
 
             string[] p = linha.Split('|');
 
             if (p[0] == "REQUEST_STREAM" && p.Length == 4 && int.TryParse(p[3], out int port))
             {
-                _pendingStream[p[1]] = (p[2], port);
+                EnviarComandoParaSensor(p[1], $"STREAM_TO|{p[2]}:{port}");
                 writer.WriteLine("ACK_REQUEST_STREAM|OK");
                 RegistarLogEsquerda($"[VIDEO] Stream pedido: {p[1]} → {p[2]}:{port}");
             }
             else if (p[0] == "STOP_STREAM" && p.Length == 2)
             {
-                _pendingStop[p[1]] = true;
+                EnviarComandoParaSensor(p[1], "STOP_STREAM");
                 writer.WriteLine("ACK_STOP_STREAM|OK");
                 RegistarLogEsquerda($"[VIDEO] Stop stream: {p[1]}");
             }
@@ -65,14 +61,16 @@ partial class MyTcpListener
         finally { client.Close(); }
     }
 
-    // Retorna sufixo a adicionar ao próximo ACK deste sensor, ou ""
-    static string ComandoPendenteParaSensor(string sensorId)
+    static void EnviarComandoParaSensor(string sensorId, string comando)
     {
-        if (_pendingStream.TryRemove(sensorId, out var req))
-            return $"|STREAM_TO|{req.Ip}:{req.Port}";
-        if (_pendingStop.TryRemove(sensorId, out _))
-            return "|STOP_STREAM";
-        return "";
+        if (_amqpChannel == null) return;
+        try
+        {
+            var body = Encoding.UTF8.GetBytes(comando);
+            _amqpChannel.BasicPublishAsync("", $"commands.{sensorId}", body).GetAwaiter().GetResult();
+            RegistarLogEsquerda($"[CMD] → {sensorId}: {comando}");
+        }
+        catch (Exception ex) { RegistarLogEsquerda($"[CMD] Falha a enviar comando a {sensorId}: {ex.Message}"); }
     }
 
     #endregion

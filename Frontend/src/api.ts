@@ -139,6 +139,8 @@ export const api = {
   analise:  (zona="", tipo="")                         => get<Analise>(`/api/analise?zona=${zona}&tipo=${tipo}`),
   padroes:  (zona="", tipo="")                         => get<Padroes>(`/api/padroes?zona=${zona}&tipo=${tipo}`),
   previsao: (zona="", tipo="", horas=6)                => get<Previsao>(`/api/previsao?zona=${zona}&tipo=${tipo}&horas=${horas}`),
-  anomalias:(zona="", tipo="", minScore=0.5, limite=100) => get<Anomalia[]>(`/api/anomalias?zona=${zona}&tipo=${tipo}&min_score=${minScore}&limite=${limite}`),
-  mlStatus: ()                                         => get<{ aquecido: boolean }>("/api/ml/status"),
+  anomalias:    (zona="", tipo="", minScore=0.5, limite=100) => get<Anomalia[]>(`/api/anomalias?zona=${zona}&tipo=${tipo}&min_score=${minScore}&limite=${limite}`),
+  mlStatus:     ()                                          => get<{ aquecido: boolean }>("/api/ml/status"),
+  dadosPeriodo: (zona: string, tipo: string, inicio: string, fim: string, limite = 5000) =>
+    get<Leitura[]>(`/api/dados?zona=${encodeURIComponent(zona)}&tipo=${encodeURIComponent(tipo)}&inicio=${encodeURIComponent(inicio)}&fim=${encodeURIComponent(fim)}&limite=${limite}`),
 };

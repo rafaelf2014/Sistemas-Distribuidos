@@ -29,13 +29,14 @@ function SortIcon({ col, sortCol, sortDir }: { col: SortCol; sortCol: SortCol; s
 export default function AnomaliasMl() {
   const [zona,     setZona]     = useState("");
   const [tipo,     setTipo]     = useState("TEMP");
-  const [minScore, setMinScore] = useState(0.5);
-  const [limite,   setLimite]   = useState(100);
+  const [minScore, setMinScore] = useState(0);
+  const [perPage,  setPerPage]  = useState(50);
+  const [page,     setPage]     = useState(1);
   const [dados,    setDados]    = useState<Anomalia[]>([]);
   const [zonas,    setZonas]    = useState<string[]>([]);
   const [erro,     setErro]     = useState("");
   const [aquecido, setAquecido] = useState<boolean | null>(null);
-  const [sortCol,  setSortCol]  = useState<SortCol>("anomalyScore");
+  const [sortCol,  setSortCol]  = useState<SortCol>("timestamp");
   const [sortDir,  setSortDir]  = useState<SortDir>("desc");
   const [ready,    setReady]    = useState(false);
 
@@ -51,16 +52,20 @@ export default function AnomaliasMl() {
     return () => clearInterval(id);
   }, []);
 
+  // Always fetch the full 500 — pagination is done client-side
   useEffect(() => {
     if (!ready) return;
     const carregar = () =>
-      api.anomalias(zona, tipo, minScore, limite)
+      api.anomalias(zona, tipo, minScore, 500)
         .then(a => { setDados(a); setErro(""); })
         .catch(() => setErro("Sem dados ou servidor indisponível."));
     carregar();
     const id = setInterval(carregar, 8000);
     return () => clearInterval(id);
-  }, [ready, zona, tipo, minScore, limite]);
+  }, [ready, zona, tipo, minScore]);
+
+  // Reset to page 1 whenever filters or page size change
+  useEffect(() => { setPage(1); }, [zona, tipo, minScore, perPage]);
 
   function toggleSort(col: SortCol) {
     if (col === sortCol) setSortDir(d => d === "asc" ? "desc" : "asc");
@@ -84,6 +89,12 @@ export default function AnomaliasMl() {
     (agora - new Date(a.timestamp.replace(" ", "T")).getTime()) < 86400_000
   ).length;
 
+  const totalPages = Math.max(1, Math.ceil(sorted.length / perPage));
+  const safePage   = Math.min(page, totalPages);
+  const paginated  = sorted.slice((safePage - 1) * perPage, safePage * perPage);
+  const firstEntry = sorted.length === 0 ? 0 : (safePage - 1) * perPage + 1;
+  const lastEntry  = Math.min(safePage * perPage, sorted.length);
+
   return (
     <div className="aml-wrap">
       <div className="filters-bar">
@@ -103,11 +114,11 @@ export default function AnomaliasMl() {
           />
           <span>{Math.round(minScore * 100)}%</span>
         </label>
-        <select value={limite} onChange={e => setLimite(+e.target.value)}>
-          {[50, 100, 200, 500].map(l => <option key={l} value={l}>{l} entradas</option>)}
+        <select value={perPage} onChange={e => setPerPage(+e.target.value)}>
+          {[20, 50, 100].map(n => <option key={n} value={n}>{n} por página</option>)}
         </select>
         <button className="btn" onClick={() =>
-          api.anomalias(zona, tipo, minScore, limite)
+          api.anomalias(zona, tipo, minScore, 500)
             .then(a => { setDados(a); setErro(""); })
             .catch(() => setErro("Sem dados ou servidor indisponível."))
         }>Atualizar</button>
@@ -155,7 +166,7 @@ export default function AnomaliasMl() {
                 </tr>
               </thead>
               <tbody>
-                {sorted.map((a, i) => (
+                {paginated.map((a, i) => (
                   <tr key={i} className={a.anomalyScore >= 0.8 ? "row-critico" : a.anomalyScore >= 0.5 ? "row-medio" : ""}>
                     <td>{a.sensorId}</td>
                     <td>{a.zona}</td>
@@ -167,6 +178,27 @@ export default function AnomaliasMl() {
                 ))}
               </tbody>
             </table>
+          </div>
+
+          {/* Pagination */}
+          <div className="aml-pagination">
+            <button
+              className="btn"
+              onClick={() => setPage(p => Math.max(1, p - 1))}
+              disabled={safePage === 1}
+            >← Anterior</button>
+
+            <span className="aml-page-info">
+              {firstEntry}–{lastEntry} de {sorted.length}
+              &nbsp;·&nbsp;
+              Página {safePage} / {totalPages}
+            </span>
+
+            <button
+              className="btn"
+              onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+              disabled={safePage === totalPages}
+            >Próxima →</button>
           </div>
         </>
       )}

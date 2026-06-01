@@ -224,9 +224,11 @@ partial class ServerCentral
         if (!string.IsNullOrEmpty(zona))   { sql += " AND zona=@zona";       cmd.Parameters.AddWithValue("@zona",   zona); }
         if (!string.IsNullOrEmpty(tipo))   { sql += " AND tipo_dado=@tipo";  cmd.Parameters.AddWithValue("@tipo",   tipo); }
         if (!string.IsNullOrEmpty(sensor)) { sql += " AND sensor_id=@sensor"; cmd.Parameters.AddWithValue("@sensor", sensor); }
-        if (!string.IsNullOrEmpty(inicio) && DateTime.TryParse(inicio, out DateTime dtInicio))
+        if (!string.IsNullOrEmpty(inicio) && DateTime.TryParse(inicio, null,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out DateTime dtInicio))
             { sql += " AND timestamp>=@inicio"; cmd.Parameters.AddWithValue("@inicio", dtInicio); }
-        if (!string.IsNullOrEmpty(fim) && DateTime.TryParse(fim, out DateTime dtFim))
+        if (!string.IsNullOrEmpty(fim) && DateTime.TryParse(fim, null,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out DateTime dtFim))
             { sql += " AND timestamp<=@fim";    cmd.Parameters.AddWithValue("@fim",    dtFim); }
 
         sql += $" ORDER BY id DESC LIMIT {limite}";
@@ -302,7 +304,7 @@ partial class ServerCentral
         cmd.Parameters.AddWithValue("@minScore", minScore);
         if (!string.IsNullOrEmpty(zona)) { sql += " AND zona=@zona";      cmd.Parameters.AddWithValue("@zona", zona); }
         if (!string.IsNullOrEmpty(tipo)) { sql += " AND tipo_dado=@tipo"; cmd.Parameters.AddWithValue("@tipo", tipo); }
-        sql += $" ORDER BY anomaly_score DESC, id DESC LIMIT {limite}";
+        sql += $" ORDER BY id DESC LIMIT {limite}";
         cmd.CommandText = sql;
 
         await using var reader = await cmd.ExecuteReaderAsync();

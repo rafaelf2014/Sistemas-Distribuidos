@@ -1,0 +1,12 @@
+{
+  "sensorId": "S014",
+  "zona": "VILAREAL_NORTE",
+  "zonaType": "residencial",
+  "videoStream": false,
+  "rabbitMqHost": "localhost",
+  "leituras": [
+    { "tipo": "NO2",  "intervaloMs": 5000 },
+    { "tipo": "O3",   "intervaloMs": 5000 },
+    { "tipo": "WIND", "intervaloMs": 5000 }
+  ]
+}

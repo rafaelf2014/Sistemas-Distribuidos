@@ -92,7 +92,10 @@ partial class MyTcpListener
 
     // Retry queue: JSON strings of batches that failed to reach the server
     const int MaxPendentes = 1000;
-    static readonly ConcurrentQueue<string> _pendentesJson = new();
+    static readonly ConcurrentQueue<string>                   _pendentesJson = new();
+
+    // Raw-format messages (JSON/XML/QueryString/Hex) waiting for PreProcessamento
+    static readonly ConcurrentQueue<(string Zona, string RawPayload)> _rawBuffer = new();
 
     // Persistent TCP connection to server
     static TcpClient?    _serverTcp;
@@ -155,8 +158,9 @@ partial class MyTcpListener
                     var consumer = new AsyncEventingBasicConsumer(_amqpChannel);
                     consumer.ReceivedAsync += async (_, ea) =>
                     {
-                        string msg = Encoding.UTF8.GetString(ea.Body.ToArray());
-                        await Task.Run(() => ProcessarMensagemSensor(msg));
+                        string msg          = Encoding.UTF8.GetString(ea.Body.ToArray());
+                        string zonaRoteamento = ea.RoutingKey.Split('.')[0];
+                        await Task.Run(() => ProcessarMensagemSensor(msg, zonaRoteamento));
                         if (_amqpChannel != null)
                             await _amqpChannel.BasicAckAsync(ea.DeliveryTag, false);
                     };
@@ -488,6 +492,8 @@ partial class MyTcpListener
             if ((DateTime.Now - inicio).TotalMilliseconds >= cfg.IntervaloMaxMs)
                 await FlushBuffer(key);
         }
+
+        await FlushRawBuffer();
     }
 
     static async Task FlushBuffer(string key)
@@ -544,8 +550,14 @@ partial class MyTcpListener
             AnomalyScore: null, IsAlarm: v.Original.IsAlarm
         )).ToList();
 
-        // ML anomaly scoring
-        if (_analiseClient != null && finais.Count > 0)
+        if (finais.Count > 0)
+            await ScoreEEnviar(finais);
+    }
+
+    // Shared ML-scoring + send helper used by both FlushBuffer and FlushRawBuffer.
+    static async Task ScoreEEnviar(List<LeituraFinal> finais)
+    {
+        if (_analiseClient != null)
         {
             try
             {
@@ -557,7 +569,7 @@ partial class MyTcpListener
                         Zona      = f.Zona,
                         Tipo      = f.TipoDado,
                         Valor     = f.Valor,
-                        Timestamp = f.Timestamp.ToString("yyyy-MM-ddTHH:mm:ss")
+                        Timestamp = f.Timestamp.ToString("yyyy-MM-ddTHH:mm:ssZ")
                     });
 
                 var resultado = await _analiseClient.ScoreBatchAsync(pedido);
@@ -577,15 +589,116 @@ partial class MyTcpListener
             catch (Exception ex) { RegistarLogEsquerda($"[ML] ScoreBatch falhou: {ex.Message}"); }
         }
 
-        if (finais.Count > 0)
-            await EnviarBatchParaServidor(finais);
+        await EnviarBatchParaServidor(finais);
+    }
+
+    // Drains _rawBuffer, sends raw payloads to PreProcessamento for format detection,
+    // then routes validated readings through the normal ML-score + send pipeline.
+    static async Task FlushRawBuffer()
+    {
+        if (_rawBuffer.IsEmpty || _grpcClient == null) return;
+
+        var bloco = new BlocoLeiturasBrutas();
+        var zonas = new List<string>();
+        while (_rawBuffer.TryDequeue(out var item))
+        {
+            bloco.Dados.Add(new LeituraBruta { GatewayId = _gatewayId, Zona = item.Zona, PayloadRede = item.RawPayload });
+            zonas.Add(item.Zona);
+        }
+        if (bloco.Dados.Count == 0) return;
+
+        try
+        {
+            var resultado = await _grpcClient.NormalizarBlocoAsync(bloco);
+
+            var finais = new List<LeituraFinal>();
+            for (int i = 0; i < Math.Min(resultado.Dados.Count, zonas.Count); i++)
+            {
+                var r = resultado.Dados[i];
+                if (!r.Valido) { RegistarLogEsquerda($"[PreProc/Raw] Rejeitado: {r.Observacao}"); continue; }
+
+                DateTime ts = DateTime.TryParse(r.Timestamp, null,
+                    DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                    out DateTime dt) ? dt : DateTime.UtcNow;
+
+                finais.Add(new LeituraFinal(r.SensorId, zonas[i], r.Tipo, r.UnidadePadrao,
+                    r.ValorNormalizado, ts, r.Qualidade, AnomalyScore: null, IsAlarm: false));
+            }
+
+            if (finais.Count > 0)
+                await ScoreEEnviar(finais);
+        }
+        catch (Exception ex) { RegistarLogEsquerda($"[PreProc/Raw] gRPC falhou: {ex.Message}"); }
+    }
+
+    // Tries to parse non-pipe control messages (HELLO / HEARTBEAT / BYE) in
+    // JSON, XML, or QueryString format. Returns true if a control message was handled.
+    static bool TryParsarControlo(string raw, string zonaRoteamento)
+    {
+        try
+        {
+            string t = raw.TrimStart();
+            string cmd = "", sensorId = "", tipos = "";
+            bool   videoStream = false;
+
+            if (t.StartsWith('{'))
+            {
+                using var doc = JsonDocument.Parse(t);
+                var root = doc.RootElement;
+                cmd        = root.TryGetProperty("comando",      out var c)  ? c.GetString()  ?? "" : "";
+                sensorId   = root.TryGetProperty("sensor_id",   out var s)  ? s.GetString()  ?? "" : "";
+                tipos      = root.TryGetProperty("tipos",       out var tp) ? tp.GetString() ?? "" : "";
+                videoStream = root.TryGetProperty("videoStream", out var vs) && vs.GetBoolean();
+            }
+            else if (t.StartsWith('<'))
+            {
+                var xml = XDocument.Parse(t);
+                if (xml.Root == null) return false;
+                cmd        = xml.Root.Attribute("tipo")?.Value             ?? "";
+                sensorId   = xml.Root.Element("SensorId")?.Value           ?? "";
+                tipos      = xml.Root.Element("Tipos")?.Value              ?? "";
+                videoStream = bool.TryParse(xml.Root.Element("VideoStream")?.Value, out bool vs) && vs;
+            }
+            else if (t.Contains('=') && !t.Contains('|'))
+            {
+                var vars = t.Split('&')
+                            .Select(p => p.Split('='))
+                            .Where(p => p.Length == 2)
+                            .ToDictionary(p => p[0].Trim(),
+                                          p => Uri.UnescapeDataString(p[1].Trim()),
+                                          StringComparer.OrdinalIgnoreCase);
+                cmd        = vars.GetValueOrDefault("cmd",   "");
+                sensorId   = vars.GetValueOrDefault("id",    "");
+                tipos      = vars.GetValueOrDefault("tipos", "");
+                videoStream = bool.TryParse(vars.GetValueOrDefault("video", "false"), out bool vs) && vs;
+            }
+            else return false;
+
+            switch (cmd.ToUpper())
+            {
+                case "HELLO" when sensorId.Length > 0:
+                    RegistarOuAtualizarSensor(sensorId, zonaRoteamento, tipos, videoStream);
+                    AutoPopularAlarmes(zonaRoteamento, tipos);
+                    _ = EnviarRegistoSensorParaServidor(sensorId, zonaRoteamento, tipos, videoStream);
+                    return true;
+                case "HEARTBEAT" when sensorId.Length > 0:
+                    AtualizarLastSync(sensorId);
+                    return true;
+                case "BYE" when sensorId.Length > 0:
+                    AtualizarEstadoSensor(sensorId, "desativado");
+                    return true;
+                default:
+                    return false;
+            }
+        }
+        catch { return false; }
     }
 
     #endregion
 
     #region HANDLER DE SENSORES
 
-    static void ProcessarMensagemSensor(string rawData)
+    static void ProcessarMensagemSensor(string rawData, string zonaRoteamento)
     {
         try
         {
@@ -621,10 +734,9 @@ partial class MyTcpListener
                         DateTime timestamp = DateTime.TryParse(parts[4], null,
                             DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
                             out DateTime ts) ? ts : DateTime.UtcNow;
-                        string   zona      = ObterZonaDoSensor(sensorId).ToUpper();
-                        string   un        = _unidades.TryGetValue(tipoDado, out string? u) ? u : "";
+                        string zona = ObterZonaDoSensor(sensorId).ToUpper();
+                        string un   = _unidades.TryGetValue(tipoDado, out string? u) ? u : "";
 
-                        // Edge alarm check — immediate, no network required
                         bool isAnomalia = false;
                         lock (_alarmesLock)
                         {
@@ -665,6 +777,13 @@ partial class MyTcpListener
 
                 case "BYE":
                     if (parts.Length >= 2) AtualizarEstadoSensor(parts[1], "desativado");
+                    break;
+
+                default:
+                    // Unknown pipe token — try parsing as JSON/XML/QueryString/Hex control message first;
+                    // if it's data, queue it for PreProcessamento format detection.
+                    if (!TryParsarControlo(rawData, zonaRoteamento))
+                        _rawBuffer.Enqueue((zonaRoteamento, rawData));
                     break;
             }
         }

@@ -1,110 +1,197 @@
 using System;
-using System.IO;
-using System.Net;
-using System.Net.Sockets;
 using System.Collections.Generic;
-using System.Linq;
-using System.Timers;
+using System.Collections.Concurrent;
 using System.Globalization;
-using System.Threading;
+using System.IO;
+using System.Linq;
+using System.Net.Sockets;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using Timer = System.Timers.Timer;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Xml.Linq;
 using Grpc.Net.Client;
 using PreProcessamento;
+using ServicoAnalise;
+using RabbitMQ.Client;
+using RabbitMQ.Client.Events;
 
-// ==========================================
-// DTOs — JSON configs
-// ==========================================
-class AgregacaoConfig
+class TipoDadoConfig
 {
-    [JsonPropertyName("tipo")]        public string Tipo        { get; set; }
-    [JsonPropertyName("unidade")]     public string Unidade     { get; set; }
-    [JsonPropertyName("intervaloMs")] public int    IntervaloMs { get; set; }
+    [JsonPropertyName("tipo")]           public string Tipo           { get; set; } = "";
+    [JsonPropertyName("unidade")]        public string Unidade        { get; set; } = "";
+    [JsonPropertyName("chunkSize")]      public int    ChunkSize      { get; set; } = 10;
+    [JsonPropertyName("intervaloMaxMs")] public int    IntervaloMaxMs { get; set; } = 60000;
+    [JsonPropertyName("modo")]           public string Modo           { get; set; } = "agregado";
 }
 
 class ConfigGateway
 {
-    [JsonPropertyName("gatewayId")]               public string                GatewayId               { get; set; } = "Gateway_002";
-    [JsonPropertyName("serverIp")]                public string                ServerIp                { get; set; } = "127.0.0.1";
-    [JsonPropertyName("preProcessamentoGrpcUrl")] public string                PreProcessamentoGrpcUrl { get; set; } = "http://localhost:50051";
-    [JsonPropertyName("agregacoes")]              public List<AgregacaoConfig> Agregacoes              { get; set; } = new();
+    [JsonPropertyName("gatewayId")]               public string               GatewayId               { get; set; } = "Gateway_001";
+    [JsonPropertyName("serverIp")]                public string               ServerIp                { get; set; } = "127.0.0.1";
+    [JsonPropertyName("rabbitMqHost")]            public string               RabbitMqHost            { get; set; } = "localhost";
+    [JsonPropertyName("zonasSubscritas")]         public List<string>         ZonasSubscritas         { get; set; } = new();
+    [JsonPropertyName("preProcessamentoGrpcUrl")] public string               PreProcessamentoGrpcUrl { get; set; } = "http://localhost:50051";
+    [JsonPropertyName("analiseGrpcUrl")]          public string               AnaliseGrpcUrl          { get; set; } = "http://localhost:50052";
+    [JsonPropertyName("tiposDados")]              public List<TipoDadoConfig> TiposDados              { get; set; } = new();
 }
 
 class SensorEntry
 {
-    [JsonPropertyName("id")]          public string Id          { get; set; }
-    [JsonPropertyName("status")]      public string Status      { get; set; }
-    [JsonPropertyName("zona")]        public string Zona        { get; set; }
-    [JsonPropertyName("tipos")]       public string Tipos       { get; set; }
+    [JsonPropertyName("id")]          public string Id          { get; set; } = "";
+    [JsonPropertyName("status")]      public string Status      { get; set; } = "";
+    [JsonPropertyName("zona")]        public string Zona        { get; set; } = "";
+    [JsonPropertyName("tipos")]       public string Tipos       { get; set; } = "";
     [JsonPropertyName("videoStream")] public bool   VideoStream { get; set; }
-    [JsonPropertyName("lastSync")]    public string LastSync    { get; set; }
+    [JsonPropertyName("lastSync")]    public string LastSync    { get; set; } = "";
 }
 
 partial class MyTcpListener
 {
     #region CAMPOS
 
-    static string _gatewayId = "Gateway_002";
-    static string _serverIp  = "127.0.0.1";
+    static string       _gatewayId       = "Gateway_001";
+    static string       _serverIp        = "127.0.0.1";
+    static string       _rabbitMqHost    = "localhost";
+    static List<string> _zonasSubscritas = new();
 
-    static readonly string pastaProjeto    = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, @"..\..\..\"));
-    static readonly string caminhoSensores = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, @"..\..\..\sensores.json"));
-    static readonly string caminhoAlarmes  = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, @"..\..\..\config_alarmes.json"));
+    static IConnection? _amqpConnection;
+    static IChannel?    _amqpChannel;
 
-    static readonly object fileLock        = new object();
-    static readonly object _bufferFileLock = new object();
-    static readonly object _alarmesLock    = new object();
+    static readonly string pastaProjeto     = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, @"..\..\..\"));
+    static readonly string caminhoSensores  = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, @"..\..\..\sensores.json"));
+    static readonly string caminhoAlarmes   = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, @"..\..\..\config_alarmes.json"));
+    static readonly string caminhoPendentes = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, @"..\..\..\pendentes.json"));
 
-    static readonly JsonSerializerOptions _jsonRead  = new() { PropertyNameCaseInsensitive = true };
-    static readonly JsonSerializerOptions _jsonWrite = new() { WriteIndented = true };
+    static readonly object fileLock            = new();
+    static readonly object _alarmesLock        = new();
+    static readonly object _alarmeCooldownLock = new();
 
-    // è melhor usar cache pra evitar problemas de performance e concorrência
+    static readonly JsonSerializerOptions _jsonRead   = new() { PropertyNameCaseInsensitive = true };
+    static readonly JsonSerializerOptions _jsonWrite  = new() { WriteIndented = false };
+    static readonly JsonSerializerOptions _jsonPretty = new() { WriteIndented = true };
+
     static readonly Dictionary<string, (string Status, string Zona, string Tipos, bool VideoStream, DateTime LastSync)>
         _sensoresCache = new();
 
-    static readonly List<Timer> _timersAgregacao = new();
-    static          Timer       _timerWatchdog;
-    static          TcpListener server = null;
+    static readonly Dictionary<string, DateTime>                     _ultimoAlarme  = new();
+    static readonly Dictionary<string, string>                       _unidades       = new();
+    static readonly ConcurrentDictionary<string, TipoDadoConfig>     _tipoConfigs    = new();
+    static          Dictionary<string, Dictionary<string, double>>   _limitesAlarme  = new();
 
-    static readonly Dictionary<string, string>                     _unidadesMedida   = new();
-    static          Dictionary<string, Dictionary<string, double>> _limitesAlarme    = new();
-    static readonly Dictionary<string, long>                       _janelasTemporais = new();
+    // In-memory chunk buffer — key = "sensorId.TIPO"
+    private record LeituraBuffer(string SensorId, string Zona, string TipoDado, string Unidade, double Valor, DateTime Timestamp, bool IsAlarm = false);
+
+    // Fully enriched reading ready to send to server
+    private record LeituraFinal(string SensorId, string Zona, string TipoDado, string Unidade,
+                                 double Valor, DateTime Timestamp, float Qualidade,
+                                 double? AnomalyScore, bool IsAlarm);
+    static readonly ConcurrentDictionary<string, ConcurrentQueue<LeituraBuffer>> _buffer       = new();
+    static readonly ConcurrentDictionary<string, DateTime>                        _bufferInicio = new();
+
+    // Retry queue: JSON strings of batches that failed to reach the server
+    const int MaxPendentes = 1000;
+    static readonly ConcurrentQueue<string>                   _pendentesJson = new();
+
+    // Raw-format messages (JSON/XML/QueryString/Hex) waiting for PreProcessamento
+    static readonly ConcurrentQueue<(string Zona, string RawPayload)> _rawBuffer = new();
+
+    // Persistent TCP connection to server
+    static TcpClient?    _serverTcp;
+    static StreamWriter? _serverWriter;
+    static StreamReader? _serverReader;
+    static readonly SemaphoreSlim _serverConnLock = new(1, 1);
+
+    // Flush loop
+    static CancellationTokenSource _cts       = new();
+    static Task                    _flushTask = Task.CompletedTask;
+
+    static System.Threading.Timer? _timerWatchdog;
+    static System.Threading.Timer? _timerDashboard;
 
     static PreProcessamentoService.PreProcessamentoServiceClient? _grpcClient;
+    static AnaliseService.AnaliseServiceClient?                   _analiseClient;
 
     #endregion
 
-    public static void Main()
+    #region INICIALIZAÇÃO
+
+    public static async Task Main()
     {
         Console.CancelKeyPress += TratarEncerramento;
         InicializarSensoresJson();
-        InicializarTimersGateway();
         InicializarFicheiroAlarmesJson();
+        InicializarGateway();
+        CarregarPendentes();
 
-        _timerWatchdog = new Timer(10000);
-        _timerWatchdog.Elapsed += VerificarSensoresPerdidos;
-        _timerWatchdog.AutoReset = true;
-        _timerWatchdog.Start();
+        _timerWatchdog  = new System.Threading.Timer(_ => VerificarSensoresPerdidos(), null, 30000, 30000);
+        _timerDashboard = new System.Threading.Timer(_ => { lock (_consoleLock) { DesenharDashboard(); } }, null, 250, 250);
 
-        // Listener de comandos do servidor (REQUEST_STREAM / STOP_STREAM)
         new Thread(IniciarListenerComandos) { IsBackground = true, Name = "CMD-Listener" }.Start();
 
-        try
-        {
-            server = new TcpListener(IPAddress.Any, 5000);
-            server.Start();
-            RegistarLogEsquerda("A escuta de sensores na porta 5000...");
+        await InicializarRabbitMQ();
+    }
 
-            while (true)
+    static async Task InicializarRabbitMQ()
+    {
+        const string EXCHANGE = "one_health";
+
+        while (true)
+        {
+            try
             {
-                TcpClient client = server.AcceptTcpClient();
-                new Thread(() => HandleSensor(client)).Start();
+                RegistarLogEsquerda($"[AMQP] A ligar ao broker: {_rabbitMqHost}...");
+
+                var factory = new ConnectionFactory { HostName = _rabbitMqHost };
+                _amqpConnection = await factory.CreateConnectionAsync();
+                _amqpChannel    = await _amqpConnection.CreateChannelAsync();
+
+                await _amqpChannel.ExchangeDeclareAsync(EXCHANGE, ExchangeType.Topic, durable: true, autoDelete: false);
+
+                foreach (string zona in _zonasSubscritas)
+                {
+                    string queue = $"gateway.{_gatewayId}.{zona}";
+                    await _amqpChannel.QueueDeclareAsync(queue, durable: true, exclusive: false, autoDelete: false);
+                    await _amqpChannel.QueueBindAsync(queue, EXCHANGE, $"{zona}.#");
+
+                    var consumer = new AsyncEventingBasicConsumer(_amqpChannel);
+                    consumer.ReceivedAsync += async (_, ea) =>
+                    {
+                        string msg          = Encoding.UTF8.GetString(ea.Body.ToArray());
+                        string zonaRoteamento = ea.RoutingKey.Split('.')[0];
+                        await Task.Run(() => ProcessarMensagemSensor(msg, zonaRoteamento));
+                        if (_amqpChannel != null)
+                            await _amqpChannel.BasicAckAsync(ea.DeliveryTag, false);
+                    };
+                    await _amqpChannel.BasicConsumeAsync(queue, autoAck: false, consumer: consumer);
+                    RegistarLogEsquerda($"[AMQP] Subscrito: {zona}");
+                }
+
+                _isOnline = true;
+                RegistarLogEsquerda($"[AMQP] Broker ligado. A escutar {_zonasSubscritas.Count} zona(s).");
+
+                while (_amqpConnection?.IsOpen ?? false)
+                    await Task.Delay(2000);
+
+                _isOnline = false;
+                RegistarLogEsquerda("[AMQP] Ligação perdida. A reconectar...");
+            }
+            catch (Exception ex)
+            {
+                _isOnline = false;
+                RegistarLogEsquerda($"[AMQP] Erro: {ex.Message}. A tentar em 5s...");
+                await Task.Delay(5000);
+            }
+            finally
+            {
+                try { _amqpChannel?.Dispose(); _amqpConnection?.Dispose(); } catch { }
+                _amqpChannel = null; _amqpConnection = null;
             }
         }
-        catch (SocketException) { RegistarLogEsquerda("Sistema de escuta interrompido."); }
-        finally { server?.Stop(); }
     }
+
+    #endregion
 
     #region ALARMES
 
@@ -131,7 +218,8 @@ partial class MyTcpListener
 
     static void GuardarAlarmesJson()
     {
-        File.WriteAllText(caminhoAlarmes, JsonSerializer.Serialize(_limitesAlarme, _jsonWrite));
+        File.WriteAllText(caminhoAlarmes, JsonSerializer.Serialize(_limitesAlarme,
+            _jsonPretty));
     }
 
     static void AutoPopularAlarmes(string zona, string tiposComBrackets)
@@ -166,9 +254,9 @@ partial class MyTcpListener
 
     #endregion
 
-    #region CONFIG DO GATEWAY
+    #region CONFIGURAÇÃO DO GATEWAY
 
-    static void InicializarTimersGateway()
+    static void InicializarGateway()
     {
         string caminho = Path.Combine(pastaProjeto, "config_gateway.json");
 
@@ -177,44 +265,59 @@ partial class MyTcpListener
             var def = new ConfigGateway
             {
                 GatewayId = _gatewayId,
-                Agregacoes = new()
+                TiposDados = new()
                 {
-                    new AgregacaoConfig { Tipo = "TEMP",  Unidade = "ºC",  IntervaloMs = 30000 },
-                    new AgregacaoConfig { Tipo = "HUM",   Unidade = "%",   IntervaloMs = 60000 },
-                    new AgregacaoConfig { Tipo = "CO2",   Unidade = "ppm", IntervaloMs = 90000 },
-                    new AgregacaoConfig { Tipo = "RUIDO", Unidade = "dB",  IntervaloMs = 40000 }
+                    new TipoDadoConfig { Tipo = "TEMP",  Unidade = "ºC",    ChunkSize = 10, IntervaloMaxMs = 60000 },
+                    new TipoDadoConfig { Tipo = "HUM",   Unidade = "%",     ChunkSize = 10, IntervaloMaxMs = 60000 },
+                    new TipoDadoConfig { Tipo = "CO2",   Unidade = "ppm",   ChunkSize = 10, IntervaloMaxMs = 60000 },
+                    new TipoDadoConfig { Tipo = "RUIDO", Unidade = "dB",    ChunkSize = 10, IntervaloMaxMs = 60000 },
+                    new TipoDadoConfig { Tipo = "LUMIN", Unidade = "lux",   ChunkSize = 10, IntervaloMaxMs = 60000 },
+                    new TipoDadoConfig { Tipo = "PART",  Unidade = "µg/m³", ChunkSize = 10, IntervaloMaxMs = 60000 },
+                    new TipoDadoConfig { Tipo = "NO2",   Unidade = "µg/m³", ChunkSize = 10, IntervaloMaxMs = 60000 },
+                    new TipoDadoConfig { Tipo = "O3",    Unidade = "ppb",   ChunkSize = 10, IntervaloMaxMs = 60000 },
+                    new TipoDadoConfig { Tipo = "WIND",  Unidade = "km/h",  ChunkSize = 10, IntervaloMaxMs = 60000 },
                 }
             };
-            File.WriteAllText(caminho, JsonSerializer.Serialize(def, _jsonWrite));
+            File.WriteAllText(caminho, JsonSerializer.Serialize(def, _jsonPretty));
         }
 
         var cfg = JsonSerializer.Deserialize<ConfigGateway>(File.ReadAllText(caminho), _jsonRead)!;
-        _gatewayId = cfg.GatewayId;
-        _serverIp  = cfg.ServerIp;
+        _gatewayId       = cfg.GatewayId;
+        _serverIp        = cfg.ServerIp;
+        _rabbitMqHost    = cfg.RabbitMqHost;
+        _zonasSubscritas = cfg.ZonasSubscritas;
+
+        foreach (var td in cfg.TiposDados)
+        {
+            string tipo = td.Tipo.ToUpper();
+            _unidades[tipo]    = td.Unidade;
+            _tipoConfigs[tipo] = td;
+        }
 
         try
         {
             var canal = GrpcChannel.ForAddress(cfg.PreProcessamentoGrpcUrl);
             _grpcClient = new PreProcessamentoService.PreProcessamentoServiceClient(canal);
-            RegistarLogEsquerda($"[gRPC] Canal iniciado: {cfg.PreProcessamentoGrpcUrl}");
+            RegistarLogEsquerda($"[gRPC] Canal PreProcessamento iniciado: {cfg.PreProcessamentoGrpcUrl}");
         }
         catch (Exception ex)
         {
-            RegistarLogEsquerda($"[gRPC] Falha ao iniciar canal: {ex.Message}");
+            RegistarLogEsquerda($"[gRPC] Falha ao iniciar canal PreProcessamento: {ex.Message}");
         }
 
-        foreach (var ag in cfg.Agregacoes)
+        try
         {
-            string tipo = ag.Tipo.ToUpper();
-            _unidadesMedida[tipo]   = ag.Unidade;
-            _janelasTemporais[tipo] = DateTime.Now.Ticks;
-
-            Timer t = new Timer(ag.IntervaloMs);
-            t.Elapsed += (_, _) => ProcessarAgregadosFiltrados(tipo);
-            t.AutoReset = true;
-            t.Start();
-            _timersAgregacao.Add(t);
+            var canalAnalise = GrpcChannel.ForAddress(cfg.AnaliseGrpcUrl);
+            _analiseClient = new AnaliseService.AnaliseServiceClient(canalAnalise);
+            RegistarLogEsquerda($"[gRPC] Canal Análise iniciado: {cfg.AnaliseGrpcUrl}");
         }
+        catch (Exception ex)
+        {
+            RegistarLogEsquerda($"[gRPC] Falha ao iniciar canal Análise: {ex.Message}");
+        }
+
+        _flushTask = Task.Run(() => LoopFlush(_cts.Token));
+        RegistarLogEsquerda("[Buffer] Flush loop iniciado.");
     }
 
     #endregion
@@ -254,7 +357,8 @@ partial class MyTcpListener
             LastSync    = kv.Value.LastSync.ToString("yyyy-MM-ddTHH:mm:ss")
         }).ToList();
 
-        File.WriteAllText(caminhoSensores, JsonSerializer.Serialize(lista, _jsonWrite));
+        File.WriteAllText(caminhoSensores, JsonSerializer.Serialize(lista,
+            _jsonPretty));
     }
 
     static void RegistarOuAtualizarSensor(string id, string zona, string tipos, bool videoStream)
@@ -266,13 +370,17 @@ partial class MyTcpListener
             PersistirCacheParaJson();
             RegistarLogEsquerda(novo ? $"Config: Novo sensor {id} registado." : $"Config: Sensor {id} atualizado.");
         }
+        _ = NotificarServidorStatus(id, "ativo");
     }
 
     static bool ValidarSensor(string id, string tipoDados)
     {
+        if (string.IsNullOrEmpty(tipoDados)) return false;
         lock (fileLock)
         {
-            return _sensoresCache.TryGetValue(id, out var s) && s.Status == "ativo" && s.Tipos.Contains(tipoDados);
+            if (!_sensoresCache.TryGetValue(id, out var s) || s.Status != "ativo") return false;
+            var tipos = s.Tipos.Trim('[', ']').Split(',').Select(t => t.Trim());
+            return tipos.Contains(tipoDados, StringComparer.OrdinalIgnoreCase);
         }
     }
 
@@ -292,20 +400,22 @@ partial class MyTcpListener
             if (_sensoresCache.TryGetValue(id, out var s))
                 _sensoresCache[id] = (estado, s.Zona, s.Tipos, s.VideoStream, s.LastSync);
             PersistirCacheParaJson();
-            RegistarLogEsquerda($"Sensor {id} {estado}.");
+            RegistarLogEsquerda($"Sensor {id} → {estado}.");
         }
+        _ = NotificarServidorStatus(id, estado);
     }
 
     static string ObterZonaDoSensor(string id)
     {
         lock (fileLock)
         {
-            return _sensoresCache.TryGetValue(id, out var s) ? s.Zona : "ZONA DESCONHECIDA";
+            return _sensoresCache.TryGetValue(id, out var s) ? s.Zona : "ZONA_DESCONHECIDA";
         }
     }
 
-    static void VerificarSensoresPerdidos(object sender, ElapsedEventArgs e)
+    static void VerificarSensoresPerdidos()
     {
+        var perdidos = new List<string>();
         lock (fileLock)
         {
             bool alterado = false;
@@ -316,295 +426,516 @@ partial class MyTcpListener
                 {
                     _sensoresCache[id] = ("manutencao", s.Zona, s.Tipos, s.VideoStream, s.LastSync);
                     alterado = true;
-                    RegistarLogEsquerda($"Watchdog: Sensor {id} precisa de manutencao (Timeout).", true);
+                    perdidos.Add(id);
+                    RegistarLogEsquerda($"Watchdog: Sensor {id} sem heartbeat (Timeout).", true);
                 }
             }
             if (alterado) PersistirCacheParaJson();
         }
+        foreach (var id in perdidos)
+            _ = NotificarServidorStatus(id, "manutencao");
     }
 
     #endregion
 
-    #region AGREGAÇÃO
+    #region BUFFER
 
-    static void ProcessarAgregadosFiltrados(string tipoDadoFiltro)
+    static async Task LoopFlush(CancellationToken ct)
     {
-        long tickNovo;
-        lock (_bufferFileLock)
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(2));
+        try
         {
-            tickNovo = DateTime.Now.Ticks;
-            _janelasTemporais[tipoDadoFiltro] = tickNovo;
+            while (await timer.WaitForNextTickAsync(ct))
+                await VerificarFlushTodos();
+        }
+        catch (OperationCanceledException) { }
+    }
+
+    static void AdicionarAoBuffer(string sensorId, string zona, string tipoDado, double valor, DateTime timestamp, bool isAlarm = false)
+    {
+        string key   = $"{sensorId}.{tipoDado}";
+        var    queue = _buffer.GetOrAdd(key, k =>
+        {
+            _bufferInicio[k] = DateTime.Now;
+            return new ConcurrentQueue<LeituraBuffer>();
+        });
+
+        string unidade = _unidades.TryGetValue(tipoDado, out string? u) ? u : "";
+        queue.Enqueue(new LeituraBuffer(sensorId, zona, tipoDado, unidade, valor, timestamp, isAlarm));
+
+        // Immediate flush when chunk is full
+        if (_tipoConfigs.TryGetValue(tipoDado, out var cfg) && queue.Count >= cfg.ChunkSize)
+            _ = Task.Run(() => FlushBuffer(key));
+    }
+
+    static async Task VerificarFlushTodos()
+    {
+        // Drain retry queue (stop if server still unreachable)
+        int maxRetry = _pendentesJson.Count;
+        for (int i = 0; i < maxRetry; i++)
+        {
+            if (!_pendentesJson.TryDequeue(out string? json)) break;
+            var resp = await EnviarMensagemAoServidor(json);
+            if (resp == null) { _pendentesJson.Enqueue(json); break; }
+            RegistarLogDireita("[RETRY] Batch reenviado", $"ACK: {resp.Trim()}");
         }
 
-        foreach (string ficheiro in Directory.GetFiles(pastaProjeto, $"pendente_*_{tipoDadoFiltro}.csv"))
+        // Time-based flush for slow sensors
+        foreach (string key in _buffer.Keys.ToList())
         {
-            if (ficheiro.Contains($"pendente_{tickNovo}_")) continue;
+            int dot = key.IndexOf('.');
+            if (dot < 0) continue;
+            string tipo = key[(dot + 1)..];
 
+            if (!_tipoConfigs.TryGetValue(tipo, out var cfg)) continue;
+            if (!_bufferInicio.TryGetValue(key, out DateTime inicio)) continue;
+            if ((DateTime.Now - inicio).TotalMilliseconds >= cfg.IntervaloMaxMs)
+                await FlushBuffer(key);
+        }
+
+        await FlushRawBuffer();
+    }
+
+    static async Task FlushBuffer(string key)
+    {
+        if (!_buffer.TryRemove(key, out var queue)) return;
+        _bufferInicio.TryRemove(key, out _);
+
+        LeituraBuffer[] amostras = queue.ToArray();
+        if (amostras.Length == 0) return;
+
+        var validas = new List<(LeituraBuffer Original, double ValorFinal, float Qualidade)>();
+
+        if (_grpcClient != null)
+        {
             try
             {
-                string[] partes = Path.GetFileNameWithoutExtension(ficheiro).Split('_');
-                if (partes.Length != 4) continue;
-
-                string ticksStr = partes[1];
-                string sensorId = partes[2];
-                string tipoDado = partes[3];
-
-                string[] linhas = File.ReadAllLines(ficheiro);
-                if (linhas.Length == 0) { File.Delete(ficheiro); continue; }
-
-                string zona    = ObterZonaDoSensor(sensorId);
-                string unidade = _unidadesMedida.TryGetValue(tipoDado, out string? u) ? u : "";
-                string ts      = long.TryParse(ticksStr, out long ticks)
-                    ? new DateTime(ticks).ToString("yyyy-MM-ddTHH:mm:ss")
-                    : DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss");
-
-                var valoresNorm = new List<double>();
-
-                if (_grpcClient != null)
-                {
-                    var bloco = new BlocoLeiturasBrutas();
-                    var rawsValidos = new List<double>();
-
-                    foreach (string linha in linhas)
+                var bloco = new BlocoLeiturasBrutas();
+                foreach (var a in amostras)
+                    bloco.Dados.Add(new LeituraBruta
                     {
-                        if (!double.TryParse(linha, NumberStyles.Any, CultureInfo.InvariantCulture, out double raw)) continue;
-                        bloco.Dados.Add(new LeituraBruta
-                        {
-                            GatewayId = _gatewayId,
-                            SensorId  = sensorId,
-                            Zona      = zona,
-                            Tipo      = tipoDado,
-                            Valor     = raw,
-                            Unidade   = unidade,
-                            Timestamp = ts
-                        });
-                        rawsValidos.Add(raw);
-                    }
+                        GatewayId = _gatewayId,
+                        SensorId  = a.SensorId,
+                        Zona      = a.Zona,
+                        Tipo      = a.TipoDado,
+                        Valor     = a.Valor,
+                        Unidade   = a.Unidade,
+                        Timestamp = a.Timestamp.ToString("yyyy-MM-ddTHH:mm:ss")
+                    });
 
-                    if (bloco.Dados.Count > 0)
-                    {
-                        try
-                        {
-                            var respostas = _grpcClient.NormalizarBloco(bloco);
-                            foreach (var resp in respostas.Dados)
-                            {
-                                if (resp.Valido)
-                                    valoresNorm.Add(resp.ValorNormalizado);
-                                else
-                                    RegistarLogEsquerda($"[gRPC] Rejeitado: {resp.Observacao}");
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            RegistarLogEsquerda($"[gRPC] Falha no bloco: {ex.Message}. A usar valores brutos.");
-                            valoresNorm.AddRange(rawsValidos);
-                        }
-                    }
-                }
-                else
+                var resultado = await _grpcClient.NormalizarBlocoAsync(bloco);
+
+                for (int i = 0; i < Math.Min(resultado.Dados.Count, amostras.Length); i++)
                 {
-                    valoresNorm = linhas
-                        .Where(l => double.TryParse(l, NumberStyles.Any, CultureInfo.InvariantCulture, out _))
-                        .Select(l => double.Parse(l, NumberStyles.Any, CultureInfo.InvariantCulture))
-                        .ToList();
-                }
-
-                if (valoresNorm.Count > 0)
-                {
-                    double media = valoresNorm.Average();
-
-                    if (EnviarParaServidor("DATA_FORWARD", sensorId, tipoDado,
-                            media.ToString("F2", CultureInfo.InvariantCulture), ts))
-                    {
-                        File.Delete(ficheiro);
-                        RegistarLogEsquerda($"Forward pendente de {sensorId} ({tipoDado}) OK.");
-                    }
-                    else RegistarLogEsquerda($"Falha Servidor: Ficheiro de {sensorId} ({tipoDado}) retido.", true);
+                    var r = resultado.Dados[i];
+                    if (r.Valido) validas.Add((amostras[i], r.ValorNormalizado, r.Qualidade));
+                    else          RegistarLogEsquerda($"[PreProc] Rejeitado: {r.Observacao}");
                 }
             }
-            catch (Exception ex) { RegistarLogEsquerda($"Erro pendente: {ex.Message}"); }
+            catch (Exception ex)
+            {
+                RegistarLogEsquerda($"[gRPC] Falha: {ex.Message}. A usar valores brutos.");
+                validas.AddRange(amostras.Select(a => (a, a.Valor, 0.5f)));
+            }
         }
+        else
+        {
+            validas.AddRange(amostras.Select(a => (a, a.Valor, 1.0f)));
+        }
+
+        // Convert to final enriched records
+        var finais = validas.Select(v => new LeituraFinal(
+            v.Original.SensorId, v.Original.Zona, v.Original.TipoDado, v.Original.Unidade,
+            v.ValorFinal, v.Original.Timestamp, v.Qualidade,
+            AnomalyScore: null, IsAlarm: v.Original.IsAlarm
+        )).ToList();
+
+        if (finais.Count > 0)
+            await ScoreEEnviar(finais);
+    }
+
+    // Shared ML-scoring + send helper used by both FlushBuffer and FlushRawBuffer.
+    static async Task ScoreEEnviar(List<LeituraFinal> finais)
+    {
+        if (_analiseClient != null)
+        {
+            try
+            {
+                var pedido = new PedidoScoreBatch { GatewayId = _gatewayId };
+                foreach (var f in finais)
+                    pedido.Leituras.Add(new LeituraScore
+                    {
+                        SensorId  = f.SensorId,
+                        Zona      = f.Zona,
+                        Tipo      = f.TipoDado,
+                        Valor     = f.Valor,
+                        Timestamp = f.Timestamp.ToString("yyyy-MM-ddTHH:mm:ssZ")
+                    });
+
+                var resultado = await _analiseClient.ScoreBatchAsync(pedido);
+
+                if (resultado.ModeloAquecido)
+                {
+                    for (int i = 0; i < Math.Min(resultado.Anomalias.Count, finais.Count); i++)
+                    {
+                        var a = resultado.Anomalias[i];
+                        finais[i] = finais[i] with { AnomalyScore = a.Score };
+                        if (a.IsAnomalia)
+                            RegistarLogEsquerda(
+                                $"[ML] Anomalia: {finais[i].SensorId} {finais[i].TipoDado} score={a.Score:F2} — {a.Motivo}", true);
+                    }
+                }
+            }
+            catch (Exception ex) { RegistarLogEsquerda($"[ML] ScoreBatch falhou: {ex.Message}"); }
+        }
+
+        await EnviarBatchParaServidor(finais);
+    }
+
+    // Drains _rawBuffer, sends raw payloads to PreProcessamento for format detection,
+    // then routes validated readings through the normal ML-score + send pipeline.
+    static async Task FlushRawBuffer()
+    {
+        if (_rawBuffer.IsEmpty || _grpcClient == null) return;
+
+        var bloco = new BlocoLeiturasBrutas();
+        var zonas = new List<string>();
+        while (_rawBuffer.TryDequeue(out var item))
+        {
+            bloco.Dados.Add(new LeituraBruta { GatewayId = _gatewayId, Zona = item.Zona, PayloadRede = item.RawPayload });
+            zonas.Add(item.Zona);
+        }
+        if (bloco.Dados.Count == 0) return;
+
+        try
+        {
+            var resultado = await _grpcClient.NormalizarBlocoAsync(bloco);
+
+            var finais = new List<LeituraFinal>();
+            for (int i = 0; i < Math.Min(resultado.Dados.Count, zonas.Count); i++)
+            {
+                var r = resultado.Dados[i];
+                if (!r.Valido) { RegistarLogEsquerda($"[PreProc/Raw] Rejeitado: {r.Observacao}"); continue; }
+
+                DateTime ts = DateTime.TryParse(r.Timestamp, null,
+                    DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                    out DateTime dt) ? dt : DateTime.UtcNow;
+
+                finais.Add(new LeituraFinal(r.SensorId, zonas[i], r.Tipo, r.UnidadePadrao,
+                    r.ValorNormalizado, ts, r.Qualidade, AnomalyScore: null, IsAlarm: false));
+            }
+
+            if (finais.Count > 0)
+                await ScoreEEnviar(finais);
+        }
+        catch (Exception ex) { RegistarLogEsquerda($"[PreProc/Raw] gRPC falhou: {ex.Message}"); }
+    }
+
+    // Tries to parse non-pipe control messages (HELLO / HEARTBEAT / BYE) in
+    // JSON, XML, or QueryString format. Returns true if a control message was handled.
+    static bool TryParsarControlo(string raw, string zonaRoteamento)
+    {
+        try
+        {
+            string t = raw.TrimStart();
+            string cmd = "", sensorId = "", tipos = "";
+            bool   videoStream = false;
+
+            if (t.StartsWith('{'))
+            {
+                using var doc = JsonDocument.Parse(t);
+                var root = doc.RootElement;
+                cmd        = root.TryGetProperty("comando",      out var c)  ? c.GetString()  ?? "" : "";
+                sensorId   = root.TryGetProperty("sensor_id",   out var s)  ? s.GetString()  ?? "" : "";
+                tipos      = root.TryGetProperty("tipos",       out var tp) ? tp.GetString() ?? "" : "";
+                videoStream = root.TryGetProperty("videoStream", out var vs) && vs.GetBoolean();
+            }
+            else if (t.StartsWith('<'))
+            {
+                var xml = XDocument.Parse(t);
+                if (xml.Root == null) return false;
+                cmd        = xml.Root.Attribute("tipo")?.Value             ?? "";
+                sensorId   = xml.Root.Element("SensorId")?.Value           ?? "";
+                tipos      = xml.Root.Element("Tipos")?.Value              ?? "";
+                videoStream = bool.TryParse(xml.Root.Element("VideoStream")?.Value, out bool vs) && vs;
+            }
+            else if (t.Contains('=') && !t.Contains('|'))
+            {
+                var vars = t.Split('&')
+                            .Select(p => p.Split('='))
+                            .Where(p => p.Length == 2)
+                            .ToDictionary(p => p[0].Trim(),
+                                          p => Uri.UnescapeDataString(p[1].Trim()),
+                                          StringComparer.OrdinalIgnoreCase);
+                cmd        = vars.GetValueOrDefault("cmd",   "");
+                sensorId   = vars.GetValueOrDefault("id",    "");
+                tipos      = vars.GetValueOrDefault("tipos", "");
+                videoStream = bool.TryParse(vars.GetValueOrDefault("video", "false"), out bool vs) && vs;
+            }
+            else return false;
+
+            switch (cmd.ToUpper())
+            {
+                case "HELLO" when sensorId.Length > 0:
+                    RegistarOuAtualizarSensor(sensorId, zonaRoteamento, tipos, videoStream);
+                    AutoPopularAlarmes(zonaRoteamento, tipos);
+                    _ = EnviarRegistoSensorParaServidor(sensorId, zonaRoteamento, tipos, videoStream);
+                    return true;
+                case "HEARTBEAT" when sensorId.Length > 0:
+                    AtualizarLastSync(sensorId);
+                    return true;
+                case "BYE" when sensorId.Length > 0:
+                    AtualizarEstadoSensor(sensorId, "desativado");
+                    return true;
+                default:
+                    return false;
+            }
+        }
+        catch { return false; }
     }
 
     #endregion
 
     #region HANDLER DE SENSORES
 
-    static void HandleSensor(TcpClient client)
+    static void ProcessarMensagemSensor(string rawData, string zonaRoteamento)
     {
         try
         {
-            using NetworkStream stream = client.GetStream();
-            using StreamReader  reader = new StreamReader(stream);
-            using StreamWriter  writer = new StreamWriter(stream) { AutoFlush = true };
+            string[] parts  = rawData.Split('|');
+            string   command = parts[0].ToUpper();
 
-            string rawData;
-            while ((rawData = reader.ReadLine()) != null)
+            switch (command)
             {
-                string[] parts  = rawData.Split('|');
-                string command  = parts[0].ToUpper();
-                string resposta = "ACK_OK";
+                case "HELLO":
+                    if (parts.Length >= 4)
+                    {
+                        bool videoCapable = parts.Length >= 5 &&
+                                            bool.TryParse(parts[4], out bool vc) && vc;
+                        RegistarOuAtualizarSensor(parts[1], parts[2], parts[3], videoCapable);
+                        AutoPopularAlarmes(parts[2], parts[3]);
+                        _ = EnviarRegistoSensorParaServidor(parts[1], parts[2], parts[3], videoCapable);
+                    }
+                    break;
 
-                switch (command)
-                {
-                    case "HELLO":
-                        if (parts.Length >= 4)
+                case "DATA_SEND":
+                    if (parts.Length >= 5 &&
+                        double.TryParse(parts[3], NumberStyles.Any, CultureInfo.InvariantCulture, out double valor))
+                    {
+                        string sensorId = parts[1];
+                        string tipoDado = parts[2].ToUpper();
+
+                        if (!ValidarSensor(sensorId, tipoDado))
                         {
-                            bool videoCapable = parts.Length >= 5 &&
-                                                bool.TryParse(parts[4], out bool vc) && vc;
-
-                            RegistarOuAtualizarSensor(parts[1], parts[2], parts[3], videoCapable);
-                            AutoPopularAlarmes(parts[2], parts[3]);
-                            EnviarRegistoSensorParaServidor(parts[1], parts[2], parts[3], videoCapable);
+                            RegistarLogEsquerda($"[WARN] {sensorId}: dados rejeitados — sensor não registado ou tipo '{tipoDado}' inválido.");
+                            break;
                         }
-                        resposta = "ACK_HELLO|OK";
-                        break;
 
-                    case "DATA_SEND":
-                        if (parts.Length >= 5 &&
-                            double.TryParse(parts[3], NumberStyles.Any, CultureInfo.InvariantCulture, out double valor))
+                        DateTime timestamp = DateTime.TryParse(parts[4], null,
+                            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                            out DateTime ts) ? ts : DateTime.UtcNow;
+                        string zona = ObterZonaDoSensor(sensorId).ToUpper();
+                        string un   = _unidades.TryGetValue(tipoDado, out string? u) ? u : "";
+
+                        bool isAnomalia = false;
+                        lock (_alarmesLock)
                         {
-                            if (ValidarSensor(parts[1], parts[2]))
+                            if (_limitesAlarme.TryGetValue(zona, out var z) &&
+                                z.TryGetValue(tipoDado, out double limite) &&
+                                limite != -1.0 && valor > limite)
+                                isAnomalia = true;
+                        }
+
+                        bool alarmeAtivo = false;
+                        if (isAnomalia)
+                        {
+                            string chave = $"{sensorId}.{tipoDado}";
+                            bool emCooldown;
+                            lock (_alarmeCooldownLock)
                             {
-                                string sensorId  = parts[1];
-                                string tipoDado  = parts[2].ToUpper();
-                                string timestamp = parts[4];
-                                string zona      = ObterZonaDoSensor(sensorId).ToUpper();
-
-                                long tickAtivo;
-                                lock (_bufferFileLock)
-                                {
-                                    tickAtivo = _janelasTemporais.TryGetValue(tipoDado, out long tk)
-                                        ? tk : DateTime.Now.Ticks;
-                                }
-                                File.AppendAllText(
-                                    Path.Combine(pastaProjeto, $"pendente_{tickAtivo}_{sensorId}_{tipoDado}.csv"),
-                                    valor.ToString(CultureInfo.InvariantCulture) + Environment.NewLine);
-
-                                string un = _unidadesMedida.TryGetValue(tipoDado, out string u) ? u : "";
-
-                                bool isAnomalia = false;
-                                lock (_alarmesLock)
-                                {
-                                    if (_limitesAlarme.TryGetValue(zona, out var z) &&
-                                        z.TryGetValue(tipoDado, out double limite) &&
-                                        limite != -1.0 && valor > limite)
-                                        isAnomalia = true;
-                                }
-
-                                if (isAnomalia)
-                                {
-                                    RegistarLogEsquerda(
-                                        $"EDGE ANALYTICS: Anomalia em {sensorId}! ({tipoDado} = {valor}{un} @ {zona})", true);
-
-                                    bool temVideo;
-                                    lock (fileLock)
-                                    {
-                                        temVideo = _sensoresCache.TryGetValue(sensorId, out var sc) && sc.VideoStream;
-                                    }
-                                    if (temVideo)
-                                        RegistarLogEsquerda($"[VIDEO] {sensorId} tem capacidade de streaming.", true);
-
-                                    EnviarParaServidor("ALARM_FORWARD", sensorId, tipoDado, parts[3], timestamp);
-                                    resposta = "ACK_DATA|ALARM_DETECTED";
-                                }
-                                else
-                                {
-                                    RegistarLogEsquerda($"{sensorId}: {tipoDado} = {valor}{un}");
-                                    resposta = "ACK_DATA|OK";
-                                }
+                                emCooldown = _ultimoAlarme.TryGetValue(chave, out DateTime ultimo) &&
+                                             (DateTime.Now - ultimo).TotalSeconds < 30;
+                                if (!emCooldown) _ultimoAlarme[chave] = DateTime.Now;
                             }
-                            else resposta = "ACK_DATA|ERRO_VALIDACAO";
+
+                            if (!emCooldown)
+                            {
+                                alarmeAtivo = true;
+                                RegistarLogEsquerda(
+                                    $"EDGE ANALYTICS: Anomalia em {sensorId}! ({tipoDado} = {valor}{un} @ {zona})", true);
+                            }
                         }
-                        break;
 
-                    case "HEARTBEAT":
-                        AtualizarLastSync(parts[1]);
-                        resposta = "ACK_HEARTBEAT|OK";
-                        break;
+                        AdicionarAoBuffer(sensorId, zona, tipoDado, valor, timestamp, alarmeAtivo);
+                        RegistarLogEsquerda($"{sensorId}: {tipoDado} = {valor}{un}");
+                    }
+                    break;
 
-                    case "BYE":
-                        if (parts.Length >= 2) AtualizarEstadoSensor(parts[1], "desativado");
-                        resposta = "ACK_BYE|OK";
-                        break;
+                case "HEARTBEAT":
+                    if (parts.Length >= 2) AtualizarLastSync(parts[1]);
+                    break;
 
-                    default:
-                        resposta = "ACK_ERR|Comando Desconhecido";
-                        break;
-                }
+                case "BYE":
+                    if (parts.Length >= 2) AtualizarEstadoSensor(parts[1], "desativado");
+                    break;
 
-                // fazemos hijack do comando pra enviar resposta + possível comando pendente
-                string cmdSuffix = parts.Length > 1 ? ComandoPendenteParaSensor(parts[1]) : "";
-                writer.WriteLine(resposta + cmdSuffix);
-                if (command == "BYE") break;
+                default:
+                    // Unknown pipe token — try parsing as JSON/XML/QueryString/Hex control message first;
+                    // if it's data, queue it for PreProcessamento format detection.
+                    if (!TryParsarControlo(rawData, zonaRoteamento))
+                        _rawBuffer.Enqueue((zonaRoteamento, rawData));
+                    break;
             }
         }
-        catch (Exception ex) { RegistarLogEsquerda($"Erro no handler do sensor: {ex.Message}"); }
-        finally { client.Close(); }
+        catch (Exception ex) { RegistarLogEsquerda($"Erro ao processar mensagem: {ex.Message}"); }
     }
 
     #endregion
 
     #region COMUNICAÇÃO COM SERVIDOR
 
-    static bool EnviarParaServidor(string tipo, string sensorId, string tipoDado, string valor, string timestamp)
+    static async Task<string?> EnviarMensagemAoServidor(string json)
     {
+        await _serverConnLock.WaitAsync();
         try
         {
-            using TcpClient  sc = new TcpClient(_serverIp, 14000);
-            using var         s = sc.GetStream();
-            using StreamReader r = new StreamReader(s);
-            using StreamWriter w = new StreamWriter(s) { AutoFlush = true };
+            for (int tentativa = 0; tentativa < 2; tentativa++)
+            {
+                try
+                {
+                    if (_serverTcp == null || !_serverTcp.Connected)
+                        await ReconectarAoServidor();
 
-            string zona = ObterZonaDoSensor(sensorId);
-            w.WriteLine($"{tipo}|{_gatewayId}|{sensorId}|{zona}|{tipoDado}|{valor}|{timestamp}");
-
-            string resposta = r.ReadLine();
-            string tag = tipo == "ALARM_FORWARD" ? "[ALARM]" : "[DATA]";
-            string un  = _unidadesMedida.TryGetValue(tipoDado, out string u) ? u : "";
-            RegistarLogDireita($"ENVIADO: {tag} {sensorId} ({tipoDado}={valor}{un})", $"RESPOSTA: {resposta}");
-
-            return resposta != null && resposta.Contains("STATUS OK");
+                    await _serverWriter!.WriteLineAsync(json);
+                    return await _serverReader!.ReadLineAsync();
+                }
+                catch
+                {
+                    try { _serverTcp?.Close(); } catch { }
+                    _serverTcp = null;
+                }
+            }
+            return null;
         }
-        catch (Exception ex)
+        finally { _serverConnLock.Release(); }
+    }
+
+    static async Task ReconectarAoServidor()
+    {
+        _serverTcp = new TcpClient();
+        await _serverTcp.ConnectAsync(_serverIp, 14000);
+        var stream = _serverTcp.GetStream();
+        _serverWriter = new StreamWriter(stream, Encoding.UTF8) { AutoFlush = true };
+        _serverReader = new StreamReader(stream, Encoding.UTF8);
+        RegistarLogEsquerda($"[TCP] Ligado ao servidor {_serverIp}:14000.");
+    }
+
+    static async Task EnviarBatchParaServidor(List<LeituraFinal> leituras)
+    {
+        string json = JsonSerializer.Serialize(new
         {
-            RegistarLogDireita("ENVIADO: [Tentativa Falhada]", $"ERRO: {ex.Message}");
-            return false;
+            tipo      = "DATA_BATCH",
+            gatewayId = _gatewayId,
+            leituras  = leituras.Select(l => new
+            {
+                sensorId     = l.SensorId,
+                zona         = l.Zona,
+                tipoDado     = l.TipoDado,
+                valor        = l.Valor,
+                timestamp    = l.Timestamp.ToString("yyyy-MM-ddTHH:mm:ss"),
+                qualidade    = l.Qualidade,
+                isAlarm      = l.IsAlarm,
+                anomalyScore = l.AnomalyScore
+            }).ToArray()
+        }, _jsonWrite);
+
+        var resposta = await EnviarMensagemAoServidor(json);
+
+        if (resposta == null || !resposta.Contains("OK"))
+        {
+            if (_pendentesJson.Count >= MaxPendentes)
+            {
+                _pendentesJson.TryDequeue(out _);
+                RegistarLogEsquerda("[TCP] Fila cheia — batch mais antigo descartado.", true);
+            }
+            _pendentesJson.Enqueue(json);
+            RegistarLogEsquerda($"[TCP] Batch retido ({leituras.Count} leituras).", true);
+        }
+        else
+        {
+            string tipo = leituras.First().TipoDado;
+            RegistarLogDireita($"BATCH {leituras.Count}x ({tipo})", $"ACK: {resposta.Trim()}");
         }
     }
 
-    // Diz ao server que sensor é e se tem video
-    static void EnviarRegistoSensorParaServidor(string sensorId, string zona, string tipos, bool videoCapable)
+    static async Task EnviarRegistoSensorParaServidor(string sensorId, string zona, string tipos, bool videoCapable)
     {
+        string json = JsonSerializer.Serialize(new
+        {
+            tipo        = "SENSOR_REG",
+            gatewayId   = _gatewayId,
+            sensorId, zona, tipos,
+            videoStream = videoCapable
+        }, _jsonWrite);
+
+        await EnviarMensagemAoServidor(json);
+    }
+
+    static async Task NotificarServidorStatus(string sensorId, string estado)
+    {
+        string json = JsonSerializer.Serialize(new
+        {
+            tipo      = "SENSOR_STATUS",
+            gatewayId = _gatewayId,
+            sensorId, estado
+        }, _jsonWrite);
+
+        await EnviarMensagemAoServidor(json);
+    }
+
+    static void CarregarPendentes()
+    {
+        if (!File.Exists(caminhoPendentes)) return;
         try
         {
-            using TcpClient  sc = new TcpClient(_serverIp, 14000);
-            using var         s = sc.GetStream();
-            using StreamReader r = new StreamReader(s);
-            using StreamWriter w = new StreamWriter(s) { AutoFlush = true };
-
-            w.WriteLine($"SENSOR_REG|{_gatewayId}|{sensorId}|{zona}|{tipos}|{(videoCapable ? "true" : "false")}");
-            r.ReadLine(); // consume ACK
+            var lista = JsonSerializer.Deserialize<string[]>(File.ReadAllText(caminhoPendentes)) ?? [];
+            foreach (var json in lista) _pendentesJson.Enqueue(json);
+            RegistarLogEsquerda($"[Buffer] {lista.Length} batch(es) pendentes recarregados.");
         }
-        catch { /* Server may not be running yet; sensor will re-HELLO on reconnect */ }
+        catch { }
+    }
+
+    static void SalvarPendentes()
+    {
+        var lista = _pendentesJson.ToArray();
+        if (lista.Length > 0)
+            File.WriteAllText(caminhoPendentes,
+                JsonSerializer.Serialize(lista, _jsonPretty));
+        else if (File.Exists(caminhoPendentes))
+            File.Delete(caminhoPendentes);
     }
 
     #endregion
 
     #region ENCERRAMENTO
 
-    static void TratarEncerramento(object sender, ConsoleCancelEventArgs args)
+    static void TratarEncerramento(object? sender, ConsoleCancelEventArgs args)
     {
         args.Cancel = true;
         _isOnline = false;
-        RegistarLogEsquerda("A encerrar o Gateway. Dados em buffer salvaguardados.");
+        RegistarLogEsquerda("A encerrar o Gateway. A aguardar flush final...");
 
-        foreach (var t in _timersAgregacao) t.Stop();
-        _timerWatchdog?.Stop();
-        GuardarAlarmesJson();
+        _cts.Cancel();
+        _flushTask.Wait(TimeSpan.FromSeconds(5));
 
-        server?.Stop();
-        Thread.Sleep(500);
+        _timerWatchdog?.Dispose();
+        _timerDashboard?.Dispose();
+        lock (_alarmesLock) { GuardarAlarmesJson(); }
+        SalvarPendentes();
+
+        try { _amqpChannel?.Dispose(); _amqpConnection?.Dispose(); } catch { }
+        try { _serverTcp?.Close(); } catch { }
+
         Environment.Exit(0);
     }
 

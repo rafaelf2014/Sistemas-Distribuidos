@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -8,6 +8,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="OpenCvSharp4" Version="4.13.0.20260330" />
+    <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.13.0.20260302" />
     <PackageReference Include="RabbitMQ.Client" Version="7.2.1" />
   </ItemGroup>
 

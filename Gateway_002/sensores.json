@@ -1,10 +1,12 @@
 [
-  {
-    "id": "S010",
-    "status": "desativado",
-    "zona": "CHAVES_CENTRO",
-    "tipos": "[CO2]",
-    "videoStream": false,
-    "lastSync": "2026-04-20T17:08:07"
-  }
+  { "id": "S011", "status": "ativo", "zona": "VILAREAL_NORTE",  "tipos": "[TEMP,HUM,CO2]",     "videoStream": false, "lastSync": "2026-06-01T00:00:00" },
+  { "id": "S012", "status": "ativo", "zona": "VILAREAL_NORTE",  "tipos": "[TEMP,HUM,CO2]",     "videoStream": false, "lastSync": "2026-06-01T00:00:00" },
+  { "id": "S013", "status": "ativo", "zona": "VILAREAL_NORTE",  "tipos": "[RUIDO,LUMIN,PART]", "videoStream": false, "lastSync": "2026-06-01T00:00:00" },
+  { "id": "S014", "status": "ativo", "zona": "VILAREAL_NORTE",  "tipos": "[NO2,O3,WIND]",      "videoStream": false, "lastSync": "2026-06-01T00:00:00" },
+  { "id": "S015", "status": "ativo", "zona": "VILAREAL_SUL",    "tipos": "[TEMP,HUM,CO2]",     "videoStream": false, "lastSync": "2026-06-01T00:00:00" },
+  { "id": "S016", "status": "ativo", "zona": "VILAREAL_SUL",    "tipos": "[RUIDO,LUMIN,PART]", "videoStream": false, "lastSync": "2026-06-01T00:00:00" },
+  { "id": "S017", "status": "ativo", "zona": "VILAREAL_SUL",    "tipos": "[NO2,O3,WIND]",      "videoStream": false, "lastSync": "2026-06-01T00:00:00" },
+  { "id": "S018", "status": "ativo", "zona": "VILAREAL_CENTRO", "tipos": "[TEMP,HUM,CO2]",     "videoStream": false, "lastSync": "2026-06-01T00:00:00" },
+  { "id": "S019", "status": "ativo", "zona": "VILAREAL_CENTRO", "tipos": "[RUIDO,LUMIN,PART]", "videoStream": false, "lastSync": "2026-06-01T00:00:00" },
+  { "id": "S020", "status": "ativo", "zona": "VILAREAL_CENTRO", "tipos": "[NO2,O3,WIND]",      "videoStream": false, "lastSync": "2026-06-01T00:00:00" }
 ]

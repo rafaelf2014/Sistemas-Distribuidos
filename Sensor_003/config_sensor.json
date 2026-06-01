@@ -1,9 +1,12 @@
 {
   "sensorId": "S003",
-  "zona": "CHAVES_SUL",
+  "zona": "CHAVES_NORTE",
+  "zonaType": "residencial",
   "videoStream": false,
+  "rabbitMqHost": "localhost",
   "leituras": [
-    { "tipo": "RUIDO", "intervaloMs": 10000 },
-    { "tipo": "LUMIN", "intervaloMs": 15000 }
+    { "tipo": "RUIDO", "intervaloMs": 5000 },
+    { "tipo": "LUMIN", "intervaloMs": 5000 },
+    { "tipo": "PART",  "intervaloMs": 5000 }
   ]
 }

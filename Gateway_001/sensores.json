@@ -1,82 +1,12 @@
 [
-  {
-    "id": "S001",
-    "status": "ativo",
-    "zona": "CHAVES_NORTE",
-    "tipos": "[TEMP,HUM,CO2,RUIDO,LUMIN,PART,NO2,O3,WIND]",
-    "videoStream": true,
-    "lastSync": "2026-06-01T00:05:33"
-  },
-  {
-    "id": "S008",
-    "status": "manutencao",
-    "zona": "CHAVES_OESTE",
-    "tipos": "[LUMIN,PART]",
-    "videoStream": false,
-    "lastSync": "2026-04-20T16:39:27"
-  },
-  {
-    "id": "S005",
-    "status": "manutencao",
-    "zona": "CHAVES_ESTE",
-    "tipos": "[CO2,RUIDO]",
-    "videoStream": false,
-    "lastSync": "2026-04-20T16:39:27"
-  },
-  {
-    "id": "S004",
-    "status": "manutencao",
-    "zona": "CHAVES_SUL",
-    "tipos": "[PART]",
-    "videoStream": false,
-    "lastSync": "2026-04-20T16:39:27"
-  },
-  {
-    "id": "S009",
-    "status": "manutencao",
-    "zona": "CHAVES_CENTRO",
-    "tipos": "[TEMP,HUM]",
-    "videoStream": false,
-    "lastSync": "2026-04-20T16:39:29"
-  },
-  {
-    "id": "S002",
-    "status": "manutencao",
-    "zona": "CHAVES_NORTE",
-    "tipos": "[CO2]",
-    "videoStream": true,
-    "lastSync": "2026-04-20T16:39:29"
-  },
-  {
-    "id": "S006",
-    "status": "manutencao",
-    "zona": "CHAVES_ESTE",
-    "tipos": "[TEMP]",
-    "videoStream": false,
-    "lastSync": "2026-04-20T16:39:29"
-  },
-  {
-    "id": "S010",
-    "status": "manutencao",
-    "zona": "CHAVES_CENTRO",
-    "tipos": "[CO2]",
-    "videoStream": false,
-    "lastSync": "2026-04-20T16:39:27"
-  },
-  {
-    "id": "S003",
-    "status": "manutencao",
-    "zona": "CHAVES_SUL",
-    "tipos": "[RUIDO,LUMIN]",
-    "videoStream": false,
-    "lastSync": "2026-04-20T16:39:29"
-  },
-  {
-    "id": "S007",
-    "status": "manutencao",
-    "zona": "CHAVES_OESTE",
-    "tipos": "[HUM,CO2,TEMP]",
-    "videoStream": false,
-    "lastSync": "2026-04-20T16:39:27"
-  }
+  { "id": "S001", "status": "ativo", "zona": "CHAVES_NORTE",  "tipos": "[TEMP,HUM,CO2]",     "videoStream": true,  "lastSync": "2026-06-01T00:00:00" },
+  { "id": "S002", "status": "ativo", "zona": "CHAVES_NORTE",  "tipos": "[TEMP,HUM,CO2]",     "videoStream": false, "lastSync": "2026-06-01T00:00:00" },
+  { "id": "S003", "status": "ativo", "zona": "CHAVES_NORTE",  "tipos": "[RUIDO,LUMIN,PART]", "videoStream": false, "lastSync": "2026-06-01T00:00:00" },
+  { "id": "S004", "status": "ativo", "zona": "CHAVES_NORTE",  "tipos": "[NO2,O3,WIND]",      "videoStream": false, "lastSync": "2026-06-01T00:00:00" },
+  { "id": "S005", "status": "ativo", "zona": "CHAVES_SUL",    "tipos": "[TEMP,HUM,CO2]",     "videoStream": false, "lastSync": "2026-06-01T00:00:00" },
+  { "id": "S006", "status": "ativo", "zona": "CHAVES_SUL",    "tipos": "[RUIDO,LUMIN,PART]", "videoStream": false, "lastSync": "2026-06-01T00:00:00" },
+  { "id": "S007", "status": "ativo", "zona": "CHAVES_SUL",    "tipos": "[NO2,O3,WIND]",      "videoStream": false, "lastSync": "2026-06-01T00:00:00" },
+  { "id": "S008", "status": "ativo", "zona": "CHAVES_CENTRO", "tipos": "[TEMP,HUM,CO2]",     "videoStream": false, "lastSync": "2026-06-01T00:00:00" },
+  { "id": "S009", "status": "ativo", "zona": "CHAVES_CENTRO", "tipos": "[RUIDO,LUMIN,PART]", "videoStream": false, "lastSync": "2026-06-01T00:00:00" },
+  { "id": "S010", "status": "ativo", "zona": "CHAVES_CENTRO", "tipos": "[NO2,O3,WIND]",      "videoStream": false, "lastSync": "2026-06-01T00:00:00" }
 ]

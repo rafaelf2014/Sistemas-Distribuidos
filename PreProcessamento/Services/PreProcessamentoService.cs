@@ -1,5 +1,11 @@
 using Grpc.Core;
 using PreProcessamento;
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
+using System.Text.Json;
+using System.Xml.Linq;
 
 namespace PreProcessamento.Services
 {
@@ -31,7 +37,6 @@ namespace PreProcessamento.Services
             ["WIND"]  = "km/h",
         };
 
-        // Minimum range (max-min) below which a batch is considered suspiciously stable
         private static double GetStuckThreshold(string tipo) => tipo switch
         {
             "TEMP"  => 0.05,
@@ -48,16 +53,141 @@ namespace PreProcessamento.Services
 
         private record BatchFlags(bool IsBloqueado, bool IsSuspeito);
         private record TsFlags(bool Futuro, bool Antigo, bool Desordem);
+        private record ResolvedLeitura(LeituraBruta Leitura, bool Valido, string Erro = "");
+
+        // ── Format detection ──────────────────────────────────────────────────────
+
+        private static ResolvedLeitura ResolverPayload(LeituraBruta l)
+        {
+            if (string.IsNullOrEmpty(l.PayloadRede))
+                return new ResolvedLeitura(l, true);
+
+            if (!TryParsarFormato(l.PayloadRede,
+                    out string sensorId, out string tipo, out double valor,
+                    out string unidade, out string timestamp))
+                return new ResolvedLeitura(l, false, "Formato de payload desconhecido ou malformado");
+
+            return new ResolvedLeitura(new LeituraBruta
+            {
+                GatewayId = l.GatewayId,
+                SensorId  = sensorId,
+                Zona      = l.Zona,
+                Tipo      = tipo,
+                Valor     = valor,
+                Unidade   = unidade,
+                Timestamp = timestamp,
+            }, true);
+        }
+
+        // Detects format (JSON / XML / QueryString / Hex) and extracts structured fields.
+        // Pipe format (DATA_SEND|...) is handled by the Gateway before reaching here.
+        private static bool TryParsarFormato(string raw,
+            out string sensorId, out string tipo, out double valor,
+            out string unidade, out string timestamp)
+        {
+            sensorId  = "";
+            tipo      = "";
+            valor     = 0;
+            unidade   = "";
+            timestamp = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ");
+
+            try
+            {
+                string t = raw.TrimStart();
+
+                // JSON: {"sensor_id":"S001","tipo_dado":"TEMP","valor":20.5,"unidade":"C","timestamp":"..."}
+                if (t.StartsWith("{"))
+                {
+                    using var doc = JsonDocument.Parse(t);
+                    var root = doc.RootElement;
+                    sensorId  = root.TryGetProperty("sensor_id", out var s)   ? s.GetString()   ?? "" : "";
+                    tipo      = root.TryGetProperty("tipo_dado", out var td)  ? td.GetString()  ?? "" :
+                                root.TryGetProperty("tipo",      out var t2)  ? t2.GetString()  ?? "" : "";
+                    valor     = root.TryGetProperty("valor",     out var v)   ? v.GetDouble()   : 0;
+                    unidade   = root.TryGetProperty("unidade",   out var u)   ? u.GetString()   ?? "" : "";
+                    timestamp = root.TryGetProperty("timestamp", out var ts)  ? ts.GetString()  ?? timestamp : timestamp;
+                    tipo      = tipo.ToUpper();
+                    return sensorId.Length > 0 && tipo.Length > 0;
+                }
+
+                // XML: <leitura><SensorId>S001</SensorId><Variavel>TEMP</Variavel><Valor>20.5</Valor><Unidade>C</Unidade><DataHora>...</DataHora></leitura>
+                if (t.StartsWith("<"))
+                {
+                    var xml = XDocument.Parse(t);
+                    if (xml.Root == null) return false;
+                    sensorId  = xml.Root.Element("SensorId")?.Value ?? "";
+                    tipo      = (xml.Root.Element("Variavel")?.Value ?? "").ToUpper();
+                    double.TryParse(xml.Root.Element("Valor")?.Value ?? "0",
+                        NumberStyles.Any, CultureInfo.InvariantCulture, out valor);
+                    unidade   = xml.Root.Element("Unidade")?.Value  ?? "";
+                    timestamp = xml.Root.Element("DataHora")?.Value ?? timestamp;
+                    return sensorId.Length > 0 && tipo.Length > 0;
+                }
+
+                // QueryString: id=S001&tipo=TEMP&val=20.5&unidade=C&ts=...
+                if (t.Contains('=') && !t.Contains('|'))
+                {
+                    var vars = t.Split('&')
+                               .Select(p => p.Split('='))
+                               .Where(p => p.Length == 2)
+                               .ToDictionary(p => p[0].Trim(),
+                                             p => Uri.UnescapeDataString(p[1].Trim()),
+                                             StringComparer.OrdinalIgnoreCase);
+                    sensorId  = vars.GetValueOrDefault("id",      "");
+                    tipo      = vars.GetValueOrDefault("tipo",    "").ToUpper();
+                    double.TryParse(vars.GetValueOrDefault("val", "0"),
+                        NumberStyles.Any, CultureInfo.InvariantCulture, out valor);
+                    unidade   = vars.GetValueOrDefault("unidade", "");
+                    timestamp = vars.GetValueOrDefault("ts",      timestamp);
+                    return sensorId.Length > 0 && tipo.Length > 0;
+                }
+
+                // Hex: IITTPPPP[TTTTTTTT]
+                // II = sensor id (byte), TT = tipo (byte), PPPP = signed value × 0.1,
+                // optional TTTTTTTT = unix epoch seconds
+                if (t.Length >= 8 && t.All(c => Uri.IsHexDigit(c)))
+                {
+                    byte  hexId   = Convert.ToByte(t.Substring(0, 2), 16);
+                    byte  hexTipo = Convert.ToByte(t.Substring(2, 2), 16);
+                    short hexVal  = Convert.ToInt16(t.Substring(4, 4), 16);
+                    sensorId = $"S{hexId:D3}";
+                    tipo = hexTipo switch
+                    {
+                        0x0A => "TEMP",  0x0B => "HUM",   0x0C => "CO2",
+                        0x0D => "LUMIN", 0x0E => "RUIDO", 0x0F => "PART",
+                        0x10 => "NO2",   0x11 => "O3",    0x12 => "WIND",
+                        _ => ""
+                    };
+                    valor = hexVal / 10.0;
+                    if (t.Length >= 16)
+                    {
+                        long epochSecs = Convert.ToInt64(t.Substring(8, 8), 16);
+                        timestamp = DateTimeOffset.FromUnixTimeSeconds(epochSecs)
+                                       .UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ");
+                    }
+                    return tipo.Length > 0;
+                }
+            }
+            catch { }
+
+            return false;
+        }
+
+        // ── gRPC methods ──────────────────────────────────────────────────────────
 
         public override Task<BlocoLeiturasProcessadas> NormalizarBloco(BlocoLeiturasBrutas request, ServerCallContext context)
         {
-            // Pass 1: unit conversion
-            var provisorios = request.Dados
+            // Step 0: resolve raw payloads into structured leituras (or error markers)
+            var resolvidas   = request.Dados.Select(ResolverPayload).ToList();
+            var estruturadas = resolvidas.Where(r => r.Valido).Select(r => r.Leitura).ToList();
+
+            // Pass 1: unit conversion on structured items only
+            var provisorios = estruturadas
                 .Select(l => { var v = Converter(l); return (Leitura: l, Valor: v, Convertido: Math.Abs(v - l.Valor) > 0.001); })
                 .ToList();
 
-            // Timestamp ordering + plausibility per reading
-            DateTime now    = DateTime.UtcNow;
+            // Timestamp ordering + plausibility
+            DateTime now     = DateTime.UtcNow;
             DateTime? prevTs = null;
             var tsFlags = provisorios.Select(p =>
             {
@@ -69,7 +199,7 @@ namespace PreProcessamento.Services
                 return new TsFlags(futuro, antigo, desordem);
             }).ToList();
 
-            // Collect in-range values sorted for stuck-sensor range check
+            // Stuck-sensor check on in-range structured values
             var valoresValidos = provisorios
                 .Where(p => _intervalos.TryGetValue(p.Leitura.Tipo.ToUpper(), out var iv)
                             && p.Valor >= iv.Min && p.Valor <= iv.Max)
@@ -77,11 +207,8 @@ namespace PreProcessamento.Services
                 .OrderBy(v => v)
                 .ToList();
 
-            bool temStats = valoresValidos.Count >= 4;
-
-            // Stuck sensor: check range of in-range values
             bool isBloqueado = false, isSuspeito = false;
-            if (temStats)
+            if (valoresValidos.Count >= 4)
             {
                 double range = valoresValidos.Last() - valoresValidos.First();
                 string tipo  = provisorios[0].Leitura.Tipo.ToUpper();
@@ -89,32 +216,63 @@ namespace PreProcessamento.Services
                 isSuspeito   = !isBloqueado && range < GetStuckThreshold(tipo);
             }
 
+            // Build response preserving original request order
             var resposta = new BlocoLeiturasProcessadas();
-            for (int i = 0; i < provisorios.Count; i++)
+            int pIdx = 0;
+            foreach (var r in resolvidas)
             {
-                var (leitura, valor, convertido) = provisorios[i];
-                resposta.Dados.Add(Processar(leitura, valor, convertido,
-                    new BatchFlags(isBloqueado, isSuspeito), tsFlags[i]));
+                if (!r.Valido)
+                {
+                    resposta.Dados.Add(new LeituraProcessada
+                    {
+                        GatewayId  = r.Leitura.GatewayId,
+                        Zona       = r.Leitura.Zona,
+                        Valido     = false,
+                        Observacao = r.Erro,
+                        Qualidade  = 0f
+                    });
+                }
+                else
+                {
+                    var (leitura, valor, convertido) = provisorios[pIdx];
+                    resposta.Dados.Add(Processar(leitura, valor, convertido,
+                        new BatchFlags(isBloqueado, isSuspeito), tsFlags[pIdx]));
+                    pIdx++;
+                }
             }
             return Task.FromResult(resposta);
         }
 
         public override Task<LeituraProcessada> Normalizar(LeituraBruta request, ServerCallContext context)
         {
-            double valor      = Converter(request);
-            bool   convertido = Math.Abs(valor - request.Valor) > 0.001;
+            var resolved = ResolverPayload(request);
+            if (!resolved.Valido)
+                return Task.FromResult(new LeituraProcessada
+                {
+                    GatewayId  = request.GatewayId,
+                    Zona       = request.Zona,
+                    Valido     = false,
+                    Observacao = resolved.Erro,
+                    Qualidade  = 0f
+                });
 
-            DateTime now  = DateTime.UtcNow;
-            bool parsed   = DateTime.TryParse(request.Timestamp, out DateTime ts);
+            var leitura     = resolved.Leitura;
+            double valor    = Converter(leitura);
+            bool convertido = Math.Abs(valor - leitura.Valor) > 0.001;
+
+            DateTime now = DateTime.UtcNow;
+            bool parsed  = DateTime.TryParse(leitura.Timestamp, out DateTime ts);
             var tsf = new TsFlags(
                 Futuro:   parsed && ts > now.AddSeconds(60),
                 Antigo:   parsed && ts < now.AddMinutes(-30),
                 Desordem: false
             );
 
-            return Task.FromResult(Processar(request, valor, convertido,
+            return Task.FromResult(Processar(leitura, valor, convertido,
                 new BatchFlags(false, false), tsf));
         }
+
+        // ── Internal helpers ──────────────────────────────────────────────────────
 
         private static double Converter(LeituraBruta request)
         {
@@ -140,10 +298,10 @@ namespace PreProcessamento.Services
             LeituraBruta leitura, double valor, bool convertido,
             BatchFlags bf, TsFlags tf)
         {
-            string tipo     = leitura.Tipo.ToUpper();
-            bool   valido   = true;
+            string tipo      = leitura.Tipo.ToUpper();
+            bool   valido    = true;
             float  qualidade = 1.0f;
-            var    obs      = new System.Text.StringBuilder();
+            var    obs       = new System.Text.StringBuilder();
 
             void Anotar(string msg)
             {
@@ -153,7 +311,6 @@ namespace PreProcessamento.Services
 
             if (convertido) qualidade *= 0.98f;
 
-            // Range validation
             if (_intervalos.TryGetValue(tipo, out var intervalo))
             {
                 if (valor < intervalo.Min || valor > intervalo.Max)
@@ -171,7 +328,6 @@ namespace PreProcessamento.Services
 
             if (valido)
             {
-                // Stuck sensor
                 if (bf.IsBloqueado)
                 {
                     qualidade *= 0.40f;
@@ -183,10 +339,9 @@ namespace PreProcessamento.Services
                     Anotar("Variância suspeita no batch");
                 }
 
-                // Timestamp issues
-                if (tf.Futuro)   { qualidade *= 0.80f; Anotar("Timestamp futuro");         }
-                if (tf.Antigo)   { qualidade *= 0.85f; Anotar("Leitura atrasada (>30min)"); }
-                if (tf.Desordem) { qualidade *= 0.90f; Anotar("Desordem temporal");         }
+                if (tf.Futuro)   { qualidade *= 0.80f; Anotar("Timestamp futuro");           }
+                if (tf.Antigo)   { qualidade *= 0.85f; Anotar("Leitura atrasada (>30min)");  }
+                if (tf.Desordem) { qualidade *= 0.90f; Anotar("Desordem temporal");           }
             }
 
             qualidade = Math.Max(0.0f, Math.Min(1.0f, qualidade));

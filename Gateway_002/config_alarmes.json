@@ -1,5 +1,11 @@
 {
-  "CHAVES_CENTRO": {
-    "CO2": -1
+  "VILAREAL_NORTE": {
+    "TEMP": -1, "HUM": -1, "CO2": -1, "RUIDO": -1, "LUMIN": -1, "PART": -1, "NO2": -1, "O3": -1, "WIND": -1
+  },
+  "VILAREAL_SUL": {
+    "TEMP": -1, "HUM": -1, "CO2": -1, "RUIDO": -1, "LUMIN": -1, "PART": -1, "NO2": -1, "O3": -1, "WIND": -1
+  },
+  "VILAREAL_CENTRO": {
+    "TEMP": -1, "HUM": -1, "CO2": -1, "RUIDO": -1, "LUMIN": -1, "PART": -1, "NO2": -1, "O3": -1, "WIND": -1
   }
 }

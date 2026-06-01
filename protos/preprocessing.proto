@@ -20,13 +20,14 @@ message BlocoLeiturasProcessadas {
 }
 
 message LeituraBruta {
-  string gateway_id = 1;
-  string sensor_id  = 2;
-  string zona       = 3;
-  string tipo       = 4;  // TEMP, HUM, CO2, RUIDO, LUMIN, PART, ...
-  double valor      = 5;
-  string unidade    = 6;  // unidade enviada pelo sensor (ex: "F", "C", "ppm")
-  string timestamp  = 7;
+  string gateway_id   = 1;
+  string sensor_id    = 2;
+  string zona         = 3;
+  string tipo         = 4;  // TEMP, HUM, CO2, RUIDO, LUMIN, PART, ...
+  double valor        = 5;
+  string unidade      = 6;  // unidade enviada pelo sensor (ex: "F", "C", "ppm")
+  string timestamp    = 7;
+  string payload_rede = 8;  // raw sensor payload — set instead of fields 2-7 for non-pipe formats
 }
 
 message LeituraProcessada {

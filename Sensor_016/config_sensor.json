@@ -1,0 +1,12 @@
+{
+  "sensorId": "S016",
+  "zona": "VILAREAL_SUL",
+  "zonaType": "residencial",
+  "videoStream": false,
+  "rabbitMqHost": "localhost",
+  "leituras": [
+    { "tipo": "RUIDO", "intervaloMs": 5000 },
+    { "tipo": "LUMIN", "intervaloMs": 5000 },
+    { "tipo": "PART",  "intervaloMs": 5000 }
+  ]
+}

@@ -2,7 +2,7 @@
   "gatewayId": "Gateway_001",
   "serverIp": "127.0.0.1",
   "rabbitMqHost": "localhost",
-  "zonasSubscritas": [ "CHAVES_NORTE", "CHAVES_SUL", "CHAVES_ESTE", "CHAVES_OESTE", "CHAVES_CENTRO" ],
+  "zonasSubscritas": [ "CHAVES_NORTE", "CHAVES_SUL", "CHAVES_CENTRO" ],
   "preProcessamentoGrpcUrl": "http://localhost:50051",
   "analiseGrpcUrl": "http://localhost:50052",
   "tiposDados": [
