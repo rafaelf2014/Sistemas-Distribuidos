@@ -14,6 +14,7 @@ import sqlite3
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
+from AnomalyDetector import MotorIsolationForest
 
 DB_PATH = "../Server/ServerData.db"
 PORT    = 50052
@@ -30,6 +31,9 @@ RISCO_THRESHOLDS = {
 
 
 class AnaliseServicer(analysis_pb2_grpc.AnaliseServiceServicer):
+
+    def __init__(self):
+        self.motor_ml = MotorIsolationForest(db_path=DB_PATH)
 
     def _carregar_dados(self, zona, tipo_dado, sensor_id, data_inicio, data_fim):
         conn = sqlite3.connect(DB_PATH)
@@ -74,6 +78,79 @@ class AnaliseServicer(analysis_pb2_grpc.AnaliseServiceServicer):
             total_leituras = len(df),
             total_alarmes  = int(df["IsAlarm"].sum()),
             timestamp      = datetime.now().isoformat()
+        )
+    
+    def AvaliarAlarmesHistoricos(self, request, context):
+        """
+        Puxa os alarmes reportados pelo Gateway num período de tempo, 
+        avalia as 15 leituras de contexto de cada um usando o Isolation Forest,
+        e separa Falsos Positivos de Emergências Reais.
+        """
+        # 1. Ajustar a data de início para buscar um "buffer" de contexto.
+        # Precisamos de dados ANTES da data pedida para as 14 leituras anteriores.
+        data_inicio_query = ""
+        if request.data_inicio:
+            try:
+                dt_inicio = datetime.fromisoformat(request.data_inicio)
+                # Recua 4 horas para garantir que temos as 14 leituras anteriores
+                dt_buffer = dt_inicio - timedelta(hours=4)
+                data_inicio_query = dt_buffer.isoformat()
+            except:
+                data_inicio_query = request.data_inicio
+
+        # 2. Carregar os dados (Usamos o método que já tinhas)
+        df = self._carregar_dados(
+            request.zona, request.tipo_dado, request.sensor_id,
+            data_inicio_query, request.data_fim
+        )
+
+        historico_completo = []
+        falsos_positivos = 0
+
+        if len(df) < 15:
+            # Sem histórico suficiente, não podemos usar o modelo temporal
+            return analysis_pb2.ResultadoAvaliacao(
+                alarmes_reais=historico_completo, 
+                falsos_positivos=falsos_positivos
+            )
+
+        # Garantir ordenação cronológica rigorosa
+        df = df.sort_values(by="Timestamp").reset_index(drop=True)
+
+        # 3. Iterar sobre os dados e usar o Isolation Forest
+        valores = df["Valor"].values
+        is_alarm_array = df["IsAlarm"].values
+        timestamps = df["Timestamp"].dt.strftime('%Y-%m-%dT%H:%M:%S').values
+
+        # Começamos no índice 14 porque precisamos de uma janela completa de 15 valores
+        for i in range(14, len(df)):
+            if is_alarm_array[i] == 1:
+                janela_atual = valores[i-14 : i+1]
+                
+                # O ML decide
+                is_real, severidade = self.motor_ml.avaliar_severidade(
+                    zona=request.zona, 
+                    tipo_dado=request.tipo_dado, 
+                    janela_15_valores=janela_atual
+                )
+
+                # Adiciona SEMPRE à lista que vai para o Frontend
+                historico_completo.append(analysis_pb2.AlarmeAvaliado(
+                    timestamp=timestamps[i],
+                    valor=float(valores[i]),
+                    severidade=severidade,
+                    is_real=is_real,
+                    sensor_id=request.sensor_id if request.sensor_id else "Desconhecido"
+                ))
+
+                # Incrementa o contador para facilitar a vida ao Frontend
+                if not is_real:
+                    falsos_positivos += 1
+
+        # 4. Devolver a resposta limpa e empacotada para o Frontend
+        return analysis_pb2.ResultadoAvaliacao(
+            historico_alarmes=historico_completo,
+            total_falsos_positivos=falsos_positivos
         )
 
     def DetectarPadroes(self, request, context):

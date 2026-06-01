@@ -63,6 +63,19 @@ export interface Previsao {
   timestamp: string;
 }
 
+export interface AlarmeAvaliado {
+  timestamp: string;
+  valor: number;
+  severidade: number;
+  isReal: boolean;
+  sensorId: string;
+}
+
+export interface ResultadoAvaliacao {
+  historicoAlarmes: AlarmeAvaliado[];
+  totalFalsosPositivos: number;
+}
+
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(BASE + path);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -70,10 +83,13 @@ async function get<T>(path: string): Promise<T> {
 }
 
 export const api = {
-  sensores: ()                                          => get<Sensor[]>("/api/sensores"),
-  dados:    (zona="", tipo="", sensor="", limite=150)  => get<Leitura[]>(`/api/dados?zona=${zona}&tipo=${tipo}&sensor=${sensor}&limite=${limite}`),
-  alarmes:  (zona="", tipo="", limite=50)              => get<Alarme[]>(`/api/alarmes?zona=${zona}&tipo=${tipo}&limite=${limite}`),
-  analise:  (zona="", tipo="")                         => get<Analise>(`/api/analise?zona=${zona}&tipo=${tipo}`),
-  padroes:  (zona="", tipo="")                         => get<Padroes>(`/api/padroes?zona=${zona}&tipo=${tipo}`),
-  previsao: (zona="", tipo="", horas=6)                => get<Previsao>(`/api/previsao?zona=${zona}&tipo=${tipo}&horas=${horas}`),
+  sensores: () => get<Sensor[]>("/api/sensores"),
+  dados: (zona = "", tipo = "", sensor = "", limite = 150) => get<Leitura[]>(`/api/dados?zona=${zona}&tipo=${tipo}&sensor=${sensor}&limite=${limite}`),
+  alarmes: (zona = "", tipo = "", limite = 50) => get<Alarme[]>(`/api/alarmes?zona=${zona}&tipo=${tipo}&limite=${limite}`),
+  analise: (zona = "", tipo = "") => get<Analise>(`/api/analise?zona=${zona}&tipo=${tipo}`),
+  padroes: (zona = "", tipo = "") => get<Padroes>(`/api/padroes?zona=${zona}&tipo=${tipo}`),
+  previsao: (zona = "", tipo = "", horas = 6) => get<Previsao>(`/api/previsao?zona=${zona}&tipo=${tipo}&horas=${horas}`),
+  alarmesInteligentes: (zona = "", tipo = "", sensor = "", inicio = "", fim = "") =>
+    get<ResultadoAvaliacao>(`/api/alarmes-inteligentes?zona=${zona}&tipo=${tipo}&sensor=${sensor}&dataInicio=${inicio}&dataFim=${fim}`),
+  anomaliasZonas: () => get<{ zona: string, totalAnomalias: number }[]>("/api/anomalias/zonas"),
 };

@@ -1,156 +1,124 @@
 import { useEffect, useState } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer
+  Tooltip, ResponsiveContainer, Cell
 } from "recharts";
 import { api } from "../api";
-import type { Analise, Padroes, Previsao } from "../api";
 import "./Analise.css";
 
-const TIPOS = ["TEMP", "HUM", "CO2", "RUIDO", "LUMIN", "PART"];
-const UNIDADES: Record<string, string> = {
-  TEMP: "°C", HUM: "%", CO2: "ppm", RUIDO: "dB", LUMIN: "lux", PART: "µg/m³"
-};
-
-function RiscoBar({ valor }: { valor: number }) {
-  const pct   = Math.round(valor * 100);
-  const color = valor >= 0.8 ? "#ff5252" : valor >= 0.5 ? "#ffb300" : valor >= 0.2 ? "#69f0ae" : "#444";
-  return (
-    <div className="risco-bar-wrap">
-      <div className="risco-bar" style={{ width: `${pct}%`, background: color }} />
-      <span className="risco-label" style={{ color }}>{pct}%</span>
-    </div>
-  );
+// Interface para garantir a tipagem dos dados vindos do C#
+interface AnomaliaZona {
+  zona: string;
+  totalAnomalias: number;
 }
 
 export default function Analise() {
-  const [zona,     setZona]     = useState("");
-  const [tipo,     setTipo]     = useState("TEMP");
-  const [horas,    setHoras]    = useState(6);
-  const [zonas,    setZonas]    = useState<string[]>([]);
-  const [analise,  setAnalise]  = useState<Analise | null>(null);
-  const [padroes,  setPadroes]  = useState<Padroes | null>(null);
-  const [previsao, setPrevisao] = useState<Previsao | null>(null);
-  const [erro,     setErro]     = useState("");
-  const [loading,  setLoading]  = useState(false);
+  const [anomalias, setAnomalias] = useState<AnomaliaZona[]>([]);
+  const [erro, setErro] = useState("");
+  const [loading, setLoading] = useState(false);
 
+  // Carrega os dados agregados das anomalias apenas uma vez no arranque
   useEffect(() => {
-    api.sensores().then(ss => {
-      setZonas([...new Set(ss.map(s => s.zona))]);
-    }).catch(() => {});
+    const carregarDados = async () => {
+      setLoading(true);
+      setErro("");
+      try {
+        // Assume que adicionaste anomaliasZonas ao teu ficheiro api.ts
+        // Se não adicionaste, usa: const res = await fetch("http://localhost:8080/api/anomalias/zonas"); const dados = await res.json();
+        const dados = await api.anomaliasZonas();
+
+        // Pega apenas no Top 5 (ou Top 10) para o gráfico não ficar gigante
+        setAnomalias(dados.slice(0, 5));
+      } catch {
+        setErro("Falha ao carregar o ranking de anomalias.");
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    carregarDados();
   }, []);
-
-  const carregar = async () => {
-    setLoading(true);
-    setErro("");
-    try {
-      const [a, p, pr] = await Promise.all([
-        api.analise(zona, tipo),
-        api.padroes(zona, tipo),
-        api.previsao(zona, tipo, horas),
-      ]);
-      setAnalise(a);
-      setPadroes(p);
-      setPrevisao(pr);
-    } catch {
-      setErro("Sem dados ou ServicoAnalise indisponível.");
-      setAnalise(null); setPadroes(null); setPrevisao(null);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => { carregar(); }, [zona, tipo, horas]);
-
-  const un = UNIDADES[tipo] ?? "";
-
-  const previsaoData = previsao?.valoresPrevistos.map((v, i) => ({
-    hora: `+${i + 1}h`,
-    valor: parseFloat(v.toFixed(2)),
-  })) ?? [];
 
   return (
     <div className="analise-wrap">
-      <div className="analise-filters">
-        <select value={zona} onChange={e => setZona(e.target.value)}>
-          <option value="">Todas as zonas</option>
-          {zonas.map(z => <option key={z}>{z}</option>)}
-        </select>
-        <select value={tipo} onChange={e => setTipo(e.target.value)}>
-          {TIPOS.map(t => <option key={t}>{t}</option>)}
-        </select>
-        <select value={horas} onChange={e => setHoras(+e.target.value)}>
-          {[3, 6, 12, 24].map(h => <option key={h} value={h}>{h}h previsão</option>)}
-        </select>
-        <button onClick={carregar} disabled={loading}>
-          {loading ? "A carregar..." : "Analisar"}
-        </button>
+
+      {/* Cabeçalho Limpo */}
+      <div className="analise-filters" style={{ marginBottom: "24px" }}>
+        <h2>Painel de Controlo de Risco</h2>
+        {loading && <span style={{ color: "#aaa", fontSize: "14px" }}>A carregar dados do servidor...</span>}
       </div>
 
-      {erro && <p className="erro">{erro}</p>}
+      {erro && <p className="erro" style={{ color: "#EF5350" }}>{erro}</p>}
 
-      {analise && (
-        <div className="analise-grid">
+      {/* O Gráfico de Barras Horizontais com Design Profissional */}
+      {!erro && anomalias.length > 0 ? (
+        // WRAPPER com maxWidth e centrado para não ficar gigante
+        <div className="card card-full" style={{ maxWidth: "850px", margin: "0", padding: "24px" }}>
 
-          {/* Estatísticas */}
-          <div className="card">
-            <h3>Estatísticas</h3>
-            <div className="stat-row"><span>Leituras</span><b>{analise.totalLeituras}</b></div>
-            <div className="stat-row"><span>Alarmes</span>
-              <b className={analise.totalAlarmes > 0 ? "alarme" : ""}>{analise.totalAlarmes}</b>
-            </div>
-            <div className="stat-row"><span>Média</span>   <b>{analise.media.toFixed(2)}{un}</b></div>
-            <div className="stat-row"><span>Desvio</span>  <b>{analise.desvioPadrao.toFixed(2)}{un}</b></div>
-            <div className="stat-row"><span>Mínimo</span>  <b>{analise.minimo.toFixed(2)}{un}</b></div>
-            <div className="stat-row"><span>Máximo</span>  <b>{analise.maximo.toFixed(2)}{un}</b></div>
+          <h3 style={{ marginBottom: "24px", color: "#e0e0e0", fontSize: "1.1rem", textTransform: "uppercase", letterSpacing: "1px" }}>
+            Top 5 Zonas Críticas <span style={{ color: "#888", fontSize: "0.9rem", textTransform: "none" }}>(Total de Alarmes críticos)</span>
+          </h3>
+
+          {/* Altura dinâmica: Se houver só 1 zona, não precisa de 350px. Usamos minHeight. */}
+          <div style={{ width: "100%", height: Math.max(200, anomalias.length * 60) }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={anomalias} layout="vertical" margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+                {/* Grelha mais subtil */}
+                <CartesianGrid strokeDasharray="3 3" horizontal={true} vertical={false} stroke="#33334d" />
+
+                <XAxis
+                  type="number"
+                  tick={{ fill: "#666", fontSize: 12 }}
+                  allowDecimals={false}
+                  axisLine={{ stroke: '#444' }}
+                  tickLine={false}
+                />
+
+                <YAxis
+                  dataKey="zona"
+                  type="category"
+                  tick={{ fill: "#ccc", fontSize: 13, fontWeight: "500" }}
+                  width={140}
+                  axisLine={{ stroke: '#444' }}
+                  tickLine={false}
+                />
+
+                <Tooltip
+                  cursor={{ fill: "rgba(255, 255, 255, 0.03)" }}
+                  contentStyle={{
+                    background: "#1e1e2f",
+                    border: "1px solid #33334d",
+                    borderRadius: "8px",
+                    boxShadow: "0 4px 6px rgba(0,0,0,0.3)"
+                  }}
+                  // Muda a cor do Nome da Zona (Branco com texto em negrito)
+                  labelStyle={{ color: "#ffffff", fontWeight: "bold", paddingBottom: "4px" }}
+
+                  // Muda a cor do valor e do texto (Verde Néon para contraste)
+                  itemStyle={{ color: "#69f0ae", fontSize: "14px", fontWeight: "500" }}
+
+                  formatter={(value: any) => [`${value} Alarmes`, "Total"]}
+                />
+
+                {/* barSize limita a grossura da barra. radius arredonda as pontas. */}
+                <Bar dataKey="totalAnomalias" barSize={28} radius={[0, 6, 6, 0]}>
+                  {anomalias.map((entry, index) => (
+                    <Cell
+                      key={`cell-${index}`}
+                      // Pior zona (índice 0) fica a vermelho elegante, restantes a laranja/dourado
+                      fill={index === 0 ? "#EF5350" : "#FFA726"}
+                    />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
           </div>
-
-          {/* Risco */}
-          {previsao && (
-            <div className="card">
-              <h3>Risco de Saúde</h3>
-              <RiscoBar valor={previsao.riscoSaude} />
-              <p className="recomendacao">{previsao.recomendacao}</p>
-            </div>
-          )}
-
-          {/* Padrões */}
-          {padroes && padroes.padroes.length > 0 && (
-            <div className="card card-full">
-              <h3>Padrões Detectados</h3>
-              <div className="padroes-list">
-                {padroes.padroes.map((p, i) => (
-                  <div key={i} className="padrao-item">
-                    <span className="padrao-desc">{p.descricao}</span>
-                    <span className="padrao-conf">{Math.round(p.confianca * 100)}%</span>
-                    {p.horaPico && <span className="padrao-hora">{p.horaPico}</span>}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Previsão */}
-          {previsaoData.length > 0 && (
-            <div className="card card-full">
-              <h3>Previsão — próximas {horas}h ({un})</h3>
-              <ResponsiveContainer width="100%" height={220}>
-                <BarChart data={previsaoData} margin={{ top: 8, right: 16, left: 0, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#2a2a4a" />
-                  <XAxis dataKey="hora" tick={{ fill: "#666", fontSize: 12 }} />
-                  <YAxis tick={{ fill: "#666", fontSize: 12 }} unit={un} width={60} />
-                  <Tooltip
-                    contentStyle={{ background: "#1a1a2e", border: "1px solid #2a2a4a", color: "#eee" }}
-                    formatter={(v) => [`${v}${un}`, "Previsto"]}
-                  />
-                  <Bar dataKey="valor" fill="#7c4dff" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          )}
-
         </div>
+      ) : (
+        !loading && !erro && <p style={{ color: "#aaa" }}>O sistema está estável. Não há anomalias registadas.</p>
       )}
+
     </div>
   );
+
 }

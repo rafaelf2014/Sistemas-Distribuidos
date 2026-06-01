@@ -1,11 +1,11 @@
 [
   {
     "id": "S001",
-    "status": "desativado",
+    "status": "ativo",
     "zona": "CHAVES_NORTE",
     "tipos": "[TEMP,HUM]",
     "videoStream": true,
-    "lastSync": "2026-05-18T12:33:58"
+    "lastSync": "2026-05-25T17:58:31"
   },
   {
     "id": "S008",

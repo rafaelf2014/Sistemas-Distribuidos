@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0e\x61nalysis.proto\x12\x08\x61nalysis\"j\n\rPedidoAnalise\x12\x0c\n\x04zona\x18\x01 \x01(\t\x12\x11\n\ttipo_dado\x18\x02 \x01(\t\x12\x11\n\tsensor_id\x18\x03 \x01(\t\x12\x13\n\x0b\x64\x61ta_inicio\x18\x04 \x01(\t\x12\x10\n\x08\x64\x61ta_fim\x18\x05 \x01(\t\"H\n\x0ePedidoPrevisao\x12\x0c\n\x04zona\x18\x01 \x01(\t\x12\x11\n\ttipo_dado\x18\x02 \x01(\t\x12\x15\n\rhoras_futuras\x18\x03 \x01(\x05\"\xbb\x01\n\x10ResultadoAnalise\x12\x0c\n\x04zona\x18\x01 \x01(\t\x12\x11\n\ttipo_dado\x18\x02 \x01(\t\x12\r\n\x05media\x18\x03 \x01(\x01\x12\x15\n\rdesvio_padrao\x18\x04 \x01(\x01\x12\x0e\n\x06minimo\x18\x05 \x01(\x01\x12\x0e\n\x06maximo\x18\x06 \x01(\x01\x12\x16\n\x0etotal_leituras\x18\x07 \x01(\x05\x12\x15\n\rtotal_alarmes\x18\x08 \x01(\x05\x12\x11\n\ttimestamp\x18\t \x01(\t\"i\n\x10ResultadoPadroes\x12\x0c\n\x04zona\x18\x01 \x01(\t\x12\x11\n\ttipo_dado\x18\x02 \x01(\t\x12!\n\x07padroes\x18\x03 \x03(\x0b\x32\x10.analysis.Padrao\x12\x11\n\ttimestamp\x18\x04 \x01(\t\"A\n\x06Padrao\x12\x11\n\tdescricao\x18\x01 \x01(\t\x12\x11\n\tconfianca\x18\x02 \x01(\x01\x12\x11\n\thora_pico\x18\x03 \x01(\t\"\x8d\x01\n\x11ResultadoPrevisao\x12\x0c\n\x04zona\x18\x01 \x01(\t\x12\x11\n\ttipo_dado\x18\x02 \x01(\t\x12\x19\n\x11valores_previstos\x18\x03 \x03(\x01\x12\x13\n\x0brisco_saude\x18\x04 \x01(\x01\x12\x14\n\x0crecomendacao\x18\x05 \x01(\t\x12\x11\n\ttimestamp\x18\x06 \x01(\t2\xe2\x01\n\x0e\x41naliseService\x12\x43\n\x0c\x41nalisarZona\x12\x17.analysis.PedidoAnalise\x1a\x1a.analysis.ResultadoAnalise\x12\x46\n\x0f\x44\x65tectarPadroes\x12\x17.analysis.PedidoAnalise\x1a\x1a.analysis.ResultadoPadroes\x12\x43\n\nPreviRisco\x12\x18.analysis.PedidoPrevisao\x1a\x1b.analysis.ResultadoPrevisaoB\x11\xaa\x02\x0eServicoAnaliseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0e\x61nalysis.proto\x12\x08\x61nalysis\"j\n\rPedidoAnalise\x12\x0c\n\x04zona\x18\x01 \x01(\t\x12\x11\n\ttipo_dado\x18\x02 \x01(\t\x12\x11\n\tsensor_id\x18\x03 \x01(\t\x12\x13\n\x0b\x64\x61ta_inicio\x18\x04 \x01(\t\x12\x10\n\x08\x64\x61ta_fim\x18\x05 \x01(\t\"H\n\x0ePedidoPrevisao\x12\x0c\n\x04zona\x18\x01 \x01(\t\x12\x11\n\ttipo_dado\x18\x02 \x01(\t\x12\x15\n\rhoras_futuras\x18\x03 \x01(\x05\"m\n\x10RequestAvaliacao\x12\x0c\n\x04zona\x18\x01 \x01(\t\x12\x11\n\ttipo_dado\x18\x02 \x01(\t\x12\x11\n\tsensor_id\x18\x03 \x01(\t\x12\x13\n\x0b\x64\x61ta_inicio\x18\x04 \x01(\t\x12\x10\n\x08\x64\x61ta_fim\x18\x05 \x01(\t\"\xbb\x01\n\x10ResultadoAnalise\x12\x0c\n\x04zona\x18\x01 \x01(\t\x12\x11\n\ttipo_dado\x18\x02 \x01(\t\x12\r\n\x05media\x18\x03 \x01(\x01\x12\x15\n\rdesvio_padrao\x18\x04 \x01(\x01\x12\x0e\n\x06minimo\x18\x05 \x01(\x01\x12\x0e\n\x06maximo\x18\x06 \x01(\x01\x12\x16\n\x0etotal_leituras\x18\x07 \x01(\x05\x12\x15\n\rtotal_alarmes\x18\x08 \x01(\x05\x12\x11\n\ttimestamp\x18\t \x01(\t\"i\n\x10ResultadoPadroes\x12\x0c\n\x04zona\x18\x01 \x01(\t\x12\x11\n\ttipo_dado\x18\x02 \x01(\t\x12!\n\x07padroes\x18\x03 \x03(\x0b\x32\x10.analysis.Padrao\x12\x11\n\ttimestamp\x18\x04 \x01(\t\"j\n\x0e\x41larmeAvaliado\x12\x11\n\ttimestamp\x18\x01 \x01(\t\x12\r\n\x05valor\x18\x02 \x01(\x01\x12\x12\n\nseveridade\x18\x03 \x01(\x01\x12\x0f\n\x07is_real\x18\x04 \x01(\x08\x12\x11\n\tsensor_id\x18\x05 \x01(\t\"A\n\x06Padrao\x12\x11\n\tdescricao\x18\x01 \x01(\t\x12\x11\n\tconfianca\x18\x02 \x01(\x01\x12\x11\n\thora_pico\x18\x03 \x01(\t\"\x8d\x01\n\x11ResultadoPrevisao\x12\x0c\n\x04zona\x18\x01 \x01(\t\x12\x11\n\ttipo_dado\x18\x02 \x01(\t\x12\x19\n\x11valores_previstos\x18\x03 \x03(\x01\x12\x13\n\x0brisco_saude\x18\x04 \x01(\x01\x12\x14\n\x0crecomendacao\x18\x05 \x01(\t\x12\x11\n\ttimestamp\x18\x06 \x01(\t\"i\n\x12ResultadoAvaliacao\x12\x33\n\x11historico_alarmes\x18\x01 \x03(\x0b\x32\x18.analysis.AlarmeAvaliado\x12\x1e\n\x16total_falsos_positivos\x18\x02 \x01(\x05\x32\xb8\x02\n\x0e\x41naliseService\x12\x43\n\x0c\x41nalisarZona\x12\x17.analysis.PedidoAnalise\x1a\x1a.analysis.ResultadoAnalise\x12\x46\n\x0f\x44\x65tectarPadroes\x12\x17.analysis.PedidoAnalise\x1a\x1a.analysis.ResultadoPadroes\x12\x43\n\nPreviRisco\x12\x18.analysis.PedidoPrevisao\x1a\x1b.analysis.ResultadoPrevisao\x12T\n\x18\x41valiarAlarmesHistoricos\x12\x1a.analysis.RequestAvaliacao\x1a\x1c.analysis.ResultadoAvaliacaoB\x11\xaa\x02\x0eServicoAnaliseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -36,14 +36,20 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_PEDIDOANALISE']._serialized_end=134
   _globals['_PEDIDOPREVISAO']._serialized_start=136
   _globals['_PEDIDOPREVISAO']._serialized_end=208
-  _globals['_RESULTADOANALISE']._serialized_start=211
-  _globals['_RESULTADOANALISE']._serialized_end=398
-  _globals['_RESULTADOPADROES']._serialized_start=400
-  _globals['_RESULTADOPADROES']._serialized_end=505
-  _globals['_PADRAO']._serialized_start=507
-  _globals['_PADRAO']._serialized_end=572
-  _globals['_RESULTADOPREVISAO']._serialized_start=575
-  _globals['_RESULTADOPREVISAO']._serialized_end=716
-  _globals['_ANALISESERVICE']._serialized_start=719
-  _globals['_ANALISESERVICE']._serialized_end=945
+  _globals['_REQUESTAVALIACAO']._serialized_start=210
+  _globals['_REQUESTAVALIACAO']._serialized_end=319
+  _globals['_RESULTADOANALISE']._serialized_start=322
+  _globals['_RESULTADOANALISE']._serialized_end=509
+  _globals['_RESULTADOPADROES']._serialized_start=511
+  _globals['_RESULTADOPADROES']._serialized_end=616
+  _globals['_ALARMEAVALIADO']._serialized_start=618
+  _globals['_ALARMEAVALIADO']._serialized_end=724
+  _globals['_PADRAO']._serialized_start=726
+  _globals['_PADRAO']._serialized_end=791
+  _globals['_RESULTADOPREVISAO']._serialized_start=794
+  _globals['_RESULTADOPREVISAO']._serialized_end=935
+  _globals['_RESULTADOAVALIACAO']._serialized_start=937
+  _globals['_RESULTADOAVALIACAO']._serialized_end=1042
+  _globals['_ANALISESERVICE']._serialized_start=1045
+  _globals['_ANALISESERVICE']._serialized_end=1357
 # @@protoc_insertion_point(module_scope)

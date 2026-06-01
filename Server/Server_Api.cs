@@ -29,13 +29,53 @@ partial class ServerCentral
     {
         try
         {
-            var canal = GrpcChannel.ForAddress(_analiseUrl);
+            Console.WriteLine("[DEBUG API] A criar canal gRPC...");
+            RegistarLog("[API] A tentar ligar ao ServicoAnalise...");
+
+            var canal = GrpcChannel.ForAddress(_analiseUrl, new GrpcChannelOptions
+            {
+                HttpHandler = new System.Net.Http.SocketsHttpHandler
+                {
+                    PooledConnectionIdleTimeout = Timeout.InfiniteTimeSpan,
+                    KeepAlivePingDelay = TimeSpan.FromSeconds(60),
+                    KeepAlivePingTimeout = TimeSpan.FromSeconds(30),
+                    EnableMultipleHttp2Connections = true
+                }
+            });
+
+            Console.WriteLine("[DEBUG API] Canal criado. A testar conectividade...");
+
             _analiseClient = new AnaliseService.AnaliseServiceClient(canal);
-            RegistarLog($"[API] Canal gRPC para ServicoAnalise: {_analiseUrl}");
+
+            // TESTE DE CONECTIVIDADE IMEDIATO
+            try
+            {
+                var testePedido = new PedidoAnalise
+                {
+                    Zona = "TEST",
+                    TipoDado = "TEMP",
+                    DataInicio = "",
+                    DataFim = ""
+                };
+
+                Console.WriteLine("[DEBUG API] A enviar pedido de teste ao Python...");
+                var deadline = DateTime.UtcNow.AddSeconds(5);
+                var respostaTeste = _analiseClient.AnalisarZona(testePedido, deadline: deadline);
+
+                Console.WriteLine("[DEBUG API] ✅ Resposta recebida do Python!");
+                RegistarLog($"[API] ✅ Ligação gRPC OK: {_analiseUrl}");
+            }
+            catch (Grpc.Core.RpcException rpcEx)
+            {
+                Console.WriteLine($"[DEBUG API] ❌ Falha gRPC: {rpcEx.StatusCode} - {rpcEx.Status.Detail}");
+                RegistarLog($"[API] ⚠ Falha no teste gRPC: {rpcEx.StatusCode} - {rpcEx.Message}");
+            }
         }
         catch (Exception ex)
         {
-            RegistarLog($"[API] Falha a ligar ao ServicoAnalise: {ex.Message}");
+            Console.WriteLine($"[DEBUG API] ❌ ERRO FATAL: {ex.GetType().Name}: {ex.Message}");
+            Console.WriteLine($"[STACK] {ex.StackTrace}");
+            RegistarLog($"[API] ❌ ERRO ao criar cliente gRPC: {ex.Message}");
         }
 
         new Thread(ListenerApi) { IsBackground = true, Name = "REST-API" }.Start();
@@ -90,21 +130,23 @@ partial class ServerCentral
         try
         {
             string path = req.Url?.AbsolutePath.TrimEnd('/') ?? "/";
-            var query   = req.QueryString;
+            var query = req.QueryString;
 
             string json = path switch
             {
-                "/api/sensores"      => HandleSensores(),
-                "/api/dados"         => HandleDados(query),
-                "/api/alarmes"       => HandleAlarmes(query),
-                "/api/analise"       => HandleAnalise(query).GetAwaiter().GetResult(),
-                "/api/padroes"       => HandlePadroes(query).GetAwaiter().GetResult(),
-                "/api/previsao"      => HandlePrevisao(query).GetAwaiter().GetResult(),
-                "/api/stream/start"  => HandleStreamStart(query),
-                "/api/stream/stop"   => HandleStreamStop(query),
+                "/api/sensores" => HandleSensores(),
+                "/api/dados" => HandleDados(query),
+                "/api/alarmes" => HandleAlarmes(query),
+                "/api/alarmes-inteligentes" => HandleAlarmesInteligentes(query).GetAwaiter().GetResult(),
+                "/api/analise" => HandleAnalise(query).GetAwaiter().GetResult(),
+                "/api/padroes" => HandlePadroes(query).GetAwaiter().GetResult(),
+                "/api/previsao" => HandlePrevisao(query).GetAwaiter().GetResult(),
+                "/api/stream/start" => HandleStreamStart(query),
+                "/api/stream/stop" => HandleStreamStop(query),
                 "/api/stream/estado" => HandleStreamEstado(),
-                "/api/shutdown"      => HandleShutdown(),
-                _                    => JsonSerializer.Serialize(new { erro = "Endpoint não encontrado." }, _jsonOpts)
+                "/api/shutdown" => HandleShutdown(),
+                "/api/anomalias/zonas" => HandleAnomaliasZonas(),
+                _ => JsonSerializer.Serialize(new { erro = "Endpoint não encontrado." }, _jsonOpts)
             };
 
             byte[] buf = Encoding.UTF8.GetBytes(json);
@@ -139,16 +181,16 @@ partial class ServerCentral
         using var reader = cmd.ExecuteReader();
         while (reader.Read())
         {
-            string sId    = reader.GetString(0);
+            string sId = reader.GetString(0);
             string status = _sensoresStatus.TryGetValue(sId, out var st) ? st : "desconhecido";
             lista.Add(new
             {
-                sensorId      = sId,
-                zona          = reader.GetString(1),
-                tipos         = reader.GetString(2),
+                sensorId = sId,
+                zona = reader.GetString(1),
+                tipos = reader.GetString(2),
                 ultimaLeitura = reader.IsDBNull(3) ? "" : reader.GetString(3),
-                totalAlarmes  = reader.GetInt32(4),
-                videoStream   = _sensoresStream.ContainsKey(sId),
+                totalAlarmes = reader.GetInt32(4),
+                videoStream = _sensoresStream.ContainsKey(sId),
                 status
             });
         }
@@ -159,12 +201,12 @@ partial class ServerCentral
     // GET /api/dados?zona=&tipo=&sensor=&inicio=&fim=&limite=100
     static string HandleDados(System.Collections.Specialized.NameValueCollection q)
     {
-        string zona    = q["zona"]   ?? "";
-        string tipo    = q["tipo"]   ?? "";
-        string sensor  = q["sensor"] ?? "";
-        string inicio  = q["inicio"] ?? "";
-        string fim     = q["fim"]    ?? "";
-        int    limite  = int.TryParse(q["limite"], out int l) ? Math.Min(l, 5000) : 200;
+        string zona = q["zona"] ?? "";
+        string tipo = q["tipo"] ?? "";
+        string sensor = q["sensor"] ?? "";
+        string inicio = q["inicio"] ?? "";
+        string fim = q["fim"] ?? "";
+        int limite = int.TryParse(q["limite"], out int l) ? Math.Min(l, 5000) : 200;
 
         var rows = new List<object>();
         using var conn = new SqliteConnection(connectionString);
@@ -172,11 +214,11 @@ partial class ServerCentral
 
         string sql = "SELECT GatewayId, SensorId, Zona, TipoDado, Valor, Timestamp, IsAlarm FROM Dados WHERE 1=1";
         var cmd = conn.CreateCommand();
-        if (!string.IsNullOrEmpty(zona))   { sql += " AND Zona=@zona";   cmd.Parameters.AddWithValue("@zona",   zona); }
-        if (!string.IsNullOrEmpty(tipo))   { sql += " AND TipoDado=@tipo"; cmd.Parameters.AddWithValue("@tipo", tipo); }
+        if (!string.IsNullOrEmpty(zona)) { sql += " AND Zona=@zona"; cmd.Parameters.AddWithValue("@zona", zona); }
+        if (!string.IsNullOrEmpty(tipo)) { sql += " AND TipoDado=@tipo"; cmd.Parameters.AddWithValue("@tipo", tipo); }
         if (!string.IsNullOrEmpty(sensor)) { sql += " AND SensorId=@sensor"; cmd.Parameters.AddWithValue("@sensor", sensor); }
         if (!string.IsNullOrEmpty(inicio)) { sql += " AND Timestamp>=@inicio"; cmd.Parameters.AddWithValue("@inicio", inicio); }
-        if (!string.IsNullOrEmpty(fim))    { sql += " AND Timestamp<=@fim";    cmd.Parameters.AddWithValue("@fim",    fim); }
+        if (!string.IsNullOrEmpty(fim)) { sql += " AND Timestamp<=@fim"; cmd.Parameters.AddWithValue("@fim", fim); }
 
         sql += $" ORDER BY Id DESC LIMIT {limite}";
         cmd.CommandText = sql;
@@ -186,12 +228,12 @@ partial class ServerCentral
             rows.Add(new
             {
                 gatewayId = reader.GetString(0),
-                sensorId  = reader.GetString(1),
-                zona      = reader.GetString(2),
-                tipoDado  = reader.GetString(3),
-                valor     = reader.GetString(4),
+                sensorId = reader.GetString(1),
+                zona = reader.GetString(2),
+                tipoDado = reader.GetString(3),
+                valor = reader.GetString(4),
                 timestamp = reader.GetString(5),
-                isAlarm   = reader.GetInt32(6) == 1
+                isAlarm = reader.GetInt32(6) == 1
             });
 
         return JsonSerializer.Serialize(rows, _jsonOpts);
@@ -200,9 +242,9 @@ partial class ServerCentral
     // GET /api/alarmes?zona=&tipo=&limite=50
     static string HandleAlarmes(System.Collections.Specialized.NameValueCollection q)
     {
-        string zona  = q["zona"] ?? "";
-        string tipo  = q["tipo"] ?? "";
-        int    limite = int.TryParse(q["limite"], out int l) ? Math.Min(l, 1000) : 50;
+        string zona = q["zona"] ?? "";
+        string tipo = q["tipo"] ?? "";
+        int limite = int.TryParse(q["limite"], out int l) ? Math.Min(l, 1000) : 50;
 
         var rows = new List<object>();
         using var conn = new SqliteConnection(connectionString);
@@ -210,7 +252,7 @@ partial class ServerCentral
 
         string sql = "SELECT GatewayId, SensorId, Zona, TipoDado, Valor, Timestamp FROM Dados WHERE IsAlarm=1";
         var cmd = conn.CreateCommand();
-        if (!string.IsNullOrEmpty(zona)) { sql += " AND Zona=@zona";   cmd.Parameters.AddWithValue("@zona", zona); }
+        if (!string.IsNullOrEmpty(zona)) { sql += " AND Zona=@zona"; cmd.Parameters.AddWithValue("@zona", zona); }
         if (!string.IsNullOrEmpty(tipo)) { sql += " AND TipoDado=@tipo"; cmd.Parameters.AddWithValue("@tipo", tipo); }
 
         sql += $" ORDER BY Id DESC LIMIT {limite}";
@@ -221,10 +263,10 @@ partial class ServerCentral
             rows.Add(new
             {
                 gatewayId = reader.GetString(0),
-                sensorId  = reader.GetString(1),
-                zona      = reader.GetString(2),
-                tipoDado  = reader.GetString(3),
-                valor     = reader.GetString(4),
+                sensorId = reader.GetString(1),
+                zona = reader.GetString(2),
+                tipoDado = reader.GetString(3),
+                valor = reader.GetString(4),
                 timestamp = reader.GetString(5)
             });
 
@@ -239,11 +281,11 @@ partial class ServerCentral
 
         var pedido = new PedidoAnalise
         {
-            Zona       = q["zona"]   ?? "",
-            TipoDado   = q["tipo"]   ?? "",
-            SensorId   = q["sensor"] ?? "",
+            Zona = q["zona"] ?? "",
+            TipoDado = q["tipo"] ?? "",
+            SensorId = q["sensor"] ?? "",
             DataInicio = q["inicio"] ?? "",
-            DataFim    = q["fim"]    ?? ""
+            DataFim = q["fim"] ?? ""
         };
 
         try
@@ -251,15 +293,15 @@ partial class ServerCentral
             var r = await _analiseClient.AnalisarZonaAsync(pedido);
             return JsonSerializer.Serialize(new
             {
-                zona          = r.Zona,
-                tipoDado      = r.TipoDado,
-                media         = r.Media,
-                desvioPadrao  = r.DesvioPadrao,
-                minimo        = r.Minimo,
-                maximo        = r.Maximo,
+                zona = r.Zona,
+                tipoDado = r.TipoDado,
+                media = r.Media,
+                desvioPadrao = r.DesvioPadrao,
+                minimo = r.Minimo,
+                maximo = r.Maximo,
                 totalLeituras = r.TotalLeituras,
-                totalAlarmes  = r.TotalAlarmes,
-                timestamp     = r.Timestamp
+                totalAlarmes = r.TotalAlarmes,
+                timestamp = r.Timestamp
             }, _jsonOpts);
         }
         catch (Grpc.Core.RpcException ex) when (ex.StatusCode == Grpc.Core.StatusCode.NotFound)
@@ -276,8 +318,8 @@ partial class ServerCentral
 
         var pedido = new PedidoAnalise
         {
-            Zona     = q["zona"]   ?? "",
-            TipoDado = q["tipo"]   ?? "",
+            Zona = q["zona"] ?? "",
+            TipoDado = q["tipo"] ?? "",
             SensorId = q["sensor"] ?? ""
         };
 
@@ -290,8 +332,8 @@ partial class ServerCentral
 
             return JsonSerializer.Serialize(new
             {
-                zona      = r.Zona,
-                tipoDado  = r.TipoDado,
+                zona = r.Zona,
+                tipoDado = r.TipoDado,
                 padroes,
                 timestamp = r.Timestamp
             }, _jsonOpts);
@@ -310,8 +352,8 @@ partial class ServerCentral
 
         var pedido = new PedidoPrevisao
         {
-            Zona         = q["zona"] ?? "",
-            TipoDado     = q["tipo"] ?? "",
+            Zona = q["zona"] ?? "",
+            TipoDado = q["tipo"] ?? "",
             HorasFuturas = int.TryParse(q["horas"], out int h) ? h : 6
         };
 
@@ -320,12 +362,12 @@ partial class ServerCentral
             var r = await _analiseClient.PreviRiscoAsync(pedido);
             return JsonSerializer.Serialize(new
             {
-                zona              = r.Zona,
-                tipoDado          = r.TipoDado,
-                valoresPrevistos  = r.ValoresPrevistos,
-                riscoSaude        = r.RiscoSaude,
-                recomendacao      = r.Recomendacao,
-                timestamp         = r.Timestamp
+                zona = r.Zona,
+                tipoDado = r.TipoDado,
+                valoresPrevistos = r.ValoresPrevistos,
+                riscoSaude = r.RiscoSaude,
+                recomendacao = r.Recomendacao,
+                timestamp = r.Timestamp
             }, _jsonOpts);
         }
         catch (Grpc.Core.RpcException ex)
@@ -383,10 +425,108 @@ partial class ServerCentral
     {
         return JsonSerializer.Serialize(new
         {
-            streamingAtivo    = _streamingAtivo,
+            streamingAtivo = _streamingAtivo,
             streamingSensorId = _streamingSensorId,
-            sensoresStream    = _sensoresStream.Select(kv => new { sensorId = kv.Key, kv.Value.GatewayId, kv.Value.Zona }).ToList(),
-            gatewayIps        = _gatewayIps.Select(kv => new { gatewayId = kv.Key, ip = kv.Value }).ToList()
+            sensoresStream = _sensoresStream.Select(kv => new { sensorId = kv.Key, kv.Value.GatewayId, kv.Value.Zona }).ToList(),
+            gatewayIps = _gatewayIps.Select(kv => new { gatewayId = kv.Key, ip = kv.Value }).ToList()
         }, _jsonOpts);
+    }
+
+    // GET /api/alarmes-inteligentes?zona=&tipo=&sensor=&inicio=&fim=
+    static async Task<string> HandleAlarmesInteligentes(System.Collections.Specialized.NameValueCollection q)
+    {
+        Console.WriteLine("[DEBUG] HandleAlarmesInteligentes chamado!");
+        Console.WriteLine($"[DEBUG] Zona={q["zona"]}, Tipo={q["tipo"]}, Sensor={q["sensor"]}");
+
+        if (_analiseClient == null)
+        {
+            Console.WriteLine("[DEBUG] ❌ _analiseClient está NULL!");
+            return JsonSerializer.Serialize(new { erro = "ServicoAnalise não disponível." }, _jsonOpts);
+        }
+
+        var requestGrpc = new RequestAvaliacao
+        {
+            Zona = q["zona"] ?? "",
+            TipoDado = q["tipo"] ?? "",
+            SensorId = q["sensor"] ?? "",
+            DataInicio = q["inicio"] ?? "",
+            DataFim = q["fim"] ?? ""
+        };
+
+        Console.WriteLine($"[DEBUG] A enviar pedido gRPC ao Python...");
+        Console.WriteLine($"[DEBUG] Request: Zona={requestGrpc.Zona}, Tipo={requestGrpc.TipoDado}");
+
+        try
+        {
+            var deadline = DateTime.UtcNow.AddSeconds(30);
+            var respostaGrpc = await _analiseClient.AvaliarAlarmesHistoricosAsync(requestGrpc, deadline: deadline);
+
+            Console.WriteLine($"[DEBUG] ✅ Resposta recebida! Total alarmes: {respostaGrpc.HistoricoAlarmes.Count}");
+
+            return JsonSerializer.Serialize(new
+            {
+                totalFalsosPositivos = respostaGrpc.TotalFalsosPositivos,
+                historicoAlarmes = respostaGrpc.HistoricoAlarmes.Select(a => new
+                {
+                    timestamp = a.Timestamp,
+                    valor = a.Valor,
+                    severidade = a.Severidade,
+                    isReal = a.IsReal,
+                    sensorId = a.SensorId
+                })
+            }, _jsonOpts);
+        }
+        catch (Grpc.Core.RpcException rpcEx)
+        {
+            Console.WriteLine($"[DEBUG] ❌ RpcException: {rpcEx.StatusCode}");
+            Console.WriteLine($"[DEBUG] Detalhe: {rpcEx.Status.Detail}");
+            Console.WriteLine($"[DEBUG] Stack: {rpcEx.StackTrace}");
+            RegistarLog($"[API] Erro gRPC AvaliarAlarmes: {rpcEx.StatusCode} - {rpcEx.Status.Detail}");
+            return JsonSerializer.Serialize(new { erro = $"Erro gRPC: {rpcEx.Status.Detail}" }, _jsonOpts);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[DEBUG] ❌ Exception genérica: {ex.GetType().Name}");
+            Console.WriteLine($"[DEBUG] Mensagem: {ex.Message}");
+            Console.WriteLine($"[DEBUG] Stack: {ex.StackTrace}");
+            RegistarLog($"[API] Erro inesperado AvaliarAlarmes: {ex.Message}");
+            return JsonSerializer.Serialize(new { erro = $"Erro inesperado: {ex.Message}" }, _jsonOpts);
+        }
+    }
+
+    static string HandleAnomaliasZonas()
+    {
+        var todosOsAlarmes = new List<DataRecord>();
+
+        // 1. LER OS DADOS (Seja SQLite, Mongo, ou SQL Server)
+        using (var conn = new SqliteConnection(connectionString))
+        {
+            conn.Open();
+            var cmd = conn.CreateCommand();
+            // Trazemos apenas os alarmes para poupar memória
+            cmd.CommandText = "SELECT GatewayId, SensorId, Zona, TipoDado, Valor, Timestamp, IsAlarm FROM Dados WHERE IsAlarm = 1";
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                todosOsAlarmes.Add(new DataRecord(
+                    reader.GetString(0), reader.GetString(1), reader.GetString(2),
+                    reader.GetString(3), reader.GetString(4), reader.GetString(5), true
+                ));
+            }
+        }
+
+        // 2. A MAGIA UNIVERSAL DO LINQ (Isto funciona independentemente da BD)
+        var anomaliasPorZona = todosOsAlarmes
+            .GroupBy(a => a.Zona)
+            .Select(grupo => new
+            {
+                zona = grupo.Key,
+                totalAnomalias = grupo.Count()
+            })
+            .OrderByDescending(x => x.totalAnomalias)
+            .ToList();
+
+        // 3. Devolver o JSON formatado para o React
+        return JsonSerializer.Serialize(anomaliasPorZona, _jsonOpts);
     }
 }

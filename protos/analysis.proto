@@ -10,6 +10,7 @@ service AnaliseService {
   rpc AnalisarZona     (PedidoAnalise)   returns (ResultadoAnalise);
   rpc DetectarPadroes  (PedidoAnalise)   returns (ResultadoPadroes);
   rpc PreviRisco       (PedidoPrevisao)  returns (ResultadoPrevisao);
+  rpc AvaliarAlarmesHistoricos (RequestAvaliacao) returns (ResultadoAvaliacao);
 }
 
 // --- Pedidos ---
@@ -26,6 +27,14 @@ message PedidoPrevisao {
   string zona          = 1;
   string tipo_dado     = 2;
   int32  horas_futuras = 3;
+}
+
+message RequestAvaliacao {
+    string zona = 1;
+    string tipo_dado = 2;
+    string sensor_id = 3;
+    string data_inicio = 4;
+    string data_fim = 5;
 }
 
 // --- Resultados ---
@@ -49,6 +58,14 @@ message ResultadoPadroes {
   string           timestamp = 4;
 }
 
+message AlarmeAvaliado {
+    string timestamp = 1;
+    double valor = 2;
+    double severidade = 3; 
+    bool is_real = 4;        // <-- O Frontend vai usar isto para separar as tabelas!
+    string sensor_id = 5;    // <-- Útil para a tabela global
+}
+
 message Padrao {
   string descricao = 1;
   double confianca = 2;  // 0.0 – 1.0
@@ -62,4 +79,9 @@ message ResultadoPrevisao {
   double          risco_saude     = 4;  // 0.0 – 1.0
   string          recomendacao    = 5;
   string          timestamp       = 6;
+}
+
+message ResultadoAvaliacao {
+    repeated AlarmeAvaliado historico_alarmes = 1; // Devolve TUDO
+    int32 total_falsos_positivos = 2; // Mantemos o contador para ser mais fácil p/ o Frontend
 }

@@ -19,7 +19,7 @@ partial class ServerCentral
     private static readonly BlockingCollection<DataRecord> _filaEscrita = new(1000);
     private static Thread _threadConsumidor = null!;
 
-    private static readonly string dbPath           = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, @"..\..\..\ServerData.db"));
+    private static readonly string dbPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, @"..\..\..\ServerData.db"));
     private static readonly string connectionString = $"Data Source={dbPath}";
     static TcpListener? _server = null;
 
@@ -78,13 +78,13 @@ partial class ServerCentral
 
     static void HandleGateway(TcpClient gatewayClient)
     {
-        string endpoint  = gatewayClient.Client.RemoteEndPoint.ToString();
+        string endpoint = gatewayClient.Client.RemoteEndPoint.ToString();
         string gatewayIp = ((IPEndPoint)gatewayClient.Client.RemoteEndPoint).Address.ToString();
         try
         {
             using NetworkStream stream = gatewayClient.GetStream();
-            using StreamReader reader  = new StreamReader(stream, Encoding.UTF8);
-            using StreamWriter writer  = new StreamWriter(stream, Encoding.UTF8) { AutoFlush = true };
+            using StreamReader reader = new StreamReader(stream, Encoding.UTF8);
+            using StreamWriter writer = new StreamWriter(stream, Encoding.UTF8) { AutoFlush = true };
 
             string linha;
             while ((linha = reader.ReadLine()) != null)
@@ -99,13 +99,13 @@ partial class ServerCentral
                 if (partes.Length == 7 && (partes[0] == "DATA_FORWARD" || partes[0] == "ALARM_FORWARD"))
                 {
                     bool isAlarm = partes[0] == "ALARM_FORWARD";
-                    var registo  = new DataRecord(partes[1], partes[2], partes[3], partes[4], partes[5], partes[6], isAlarm);
+                    var registo = new DataRecord(partes[1], partes[2], partes[3], partes[4], partes[5], partes[6], isAlarm);
 
                     if (_filaEscrita.TryAdd(registo, TimeSpan.FromSeconds(5)))
                     {
                         writer.WriteLine("ACK_FORWARDDATA|STATUS OK");
                         if (isAlarm) RegistarLog($"[{partes[3]}] ANOMALIA! Sensor: {partes[2]} | {partes[4]} = {partes[5]}", true);
-                        else         RegistarLog($"[{partes[3]}] {partes[2]} -> {partes[4]} = {partes[5]}");
+                        else RegistarLog($"[{partes[3]}] {partes[2]} -> {partes[4]} = {partes[5]}");
                     }
                     else
                     {
@@ -167,13 +167,13 @@ partial class ServerCentral
             var cmd = connection.CreateCommand();
             cmd.CommandText = @"INSERT INTO Dados (GatewayId, SensorId, Zona, TipoDado, Valor, Timestamp, IsAlarm)
                                 VALUES ($gatewayId, $sensorId, $zona, $tipoDado, $valor, $timestamp, $isAlarm)";
-            cmd.Parameters.AddWithValue("$gatewayId",  gatewayId);
-            cmd.Parameters.AddWithValue("$sensorId",   sensorId);
-            cmd.Parameters.AddWithValue("$zona",       zona);
-            cmd.Parameters.AddWithValue("$tipoDado",   tipoDado);
-            cmd.Parameters.AddWithValue("$valor",      valor);
-            cmd.Parameters.AddWithValue("$timestamp",  timestamp);
-            cmd.Parameters.AddWithValue("$isAlarm",    isAlarm ? 1 : 0);
+            cmd.Parameters.AddWithValue("$gatewayId", gatewayId);
+            cmd.Parameters.AddWithValue("$sensorId", sensorId);
+            cmd.Parameters.AddWithValue("$zona", zona);
+            cmd.Parameters.AddWithValue("$tipoDado", tipoDado);
+            cmd.Parameters.AddWithValue("$valor", valor);
+            cmd.Parameters.AddWithValue("$timestamp", timestamp);
+            cmd.Parameters.AddWithValue("$isAlarm", isAlarm ? 1 : 0);
             cmd.ExecuteNonQuery();
         }
         catch (Exception ex) { RegistarLog($"Erro INSERT DB: {ex.Message}"); }
@@ -198,4 +198,5 @@ partial class ServerCentral
     }
 
     #endregion
+
 }

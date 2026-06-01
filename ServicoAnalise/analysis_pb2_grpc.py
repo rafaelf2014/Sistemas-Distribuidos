@@ -51,6 +51,11 @@ class AnaliseServiceStub(object):
                 request_serializer=analysis__pb2.PedidoPrevisao.SerializeToString,
                 response_deserializer=analysis__pb2.ResultadoPrevisao.FromString,
                 _registered_method=True)
+        self.AvaliarAlarmesHistoricos = channel.unary_unary(
+                '/analysis.AnaliseService/AvaliarAlarmesHistoricos',
+                request_serializer=analysis__pb2.RequestAvaliacao.SerializeToString,
+                response_deserializer=analysis__pb2.ResultadoAvaliacao.FromString,
+                _registered_method=True)
 
 
 class AnaliseServiceServicer(object):
@@ -76,6 +81,12 @@ class AnaliseServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def AvaliarAlarmesHistoricos(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_AnaliseServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -93,6 +104,11 @@ def add_AnaliseServiceServicer_to_server(servicer, server):
                     servicer.PreviRisco,
                     request_deserializer=analysis__pb2.PedidoPrevisao.FromString,
                     response_serializer=analysis__pb2.ResultadoPrevisao.SerializeToString,
+            ),
+            'AvaliarAlarmesHistoricos': grpc.unary_unary_rpc_method_handler(
+                    servicer.AvaliarAlarmesHistoricos,
+                    request_deserializer=analysis__pb2.RequestAvaliacao.FromString,
+                    response_serializer=analysis__pb2.ResultadoAvaliacao.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -178,6 +194,33 @@ class AnaliseService(object):
             '/analysis.AnaliseService/PreviRisco',
             analysis__pb2.PedidoPrevisao.SerializeToString,
             analysis__pb2.ResultadoPrevisao.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AvaliarAlarmesHistoricos(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/analysis.AnaliseService/AvaliarAlarmesHistoricos',
+            analysis__pb2.RequestAvaliacao.SerializeToString,
+            analysis__pb2.ResultadoAvaliacao.FromString,
             options,
             channel_credentials,
             insecure,
