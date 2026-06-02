@@ -113,7 +113,7 @@ namespace sensor
                     await _channel.BasicConsumeAsync($"commands.{_idSensor}", autoAck: false, consumer: consumer);
 
                     AlterarEstado(true, $"Broker ({_brokerHost})");
-                    Publicar($"HELLO|{_idSensor}|{_zona}|[{_dataTypes}]|{(_videoStream ? "true" : "false")}", $"{_zona}.CONTROL");
+                    await Publicar($"HELLO|{_idSensor}|{_zona}|[{_dataTypes}]|{(_videoStream ? "true" : "false")}", $"{_zona}.CONTROL");
 
                     while (!_encerrando && (_connection?.IsOpen ?? false))
                         await Task.Delay(1000);
@@ -151,7 +151,7 @@ namespace sensor
             _zona        = cfg.Zona;
             _videoStream = cfg.VideoStream;
             _zonaType    = cfg.ZonaType;
-            _brokerHost  = cfg.RabbitMqHost;
+            _brokerHost  = Environment.GetEnvironmentVariable("RABBITMQ_HOST") ?? cfg.RabbitMqHost;
             _dataTypes   = string.Join(",", cfg.Leituras.ConvertAll(l => l.Tipo.ToUpper()));
 
             return cfg.Leituras.ConvertAll(l => new SensorConfig
@@ -171,7 +171,7 @@ namespace sensor
             foreach (var cfg in configs)
             {
                 Timer t = new Timer(cfg.IntervaloMs);
-                t.Elapsed += (_, _) => GerarEEnviarDado(cfg);
+                t.Elapsed += async (_, _) => await GerarEEnviarDado(cfg);
                 t.AutoReset = true;
                 t.Start();
                 _timersDados.Add(t);
@@ -182,19 +182,19 @@ namespace sensor
 
         #region BROKER
 
-        static void EnviarHeartbeatAutomatico(object? sender, ElapsedEventArgs e)
+        static async void EnviarHeartbeatAutomatico(object? sender, ElapsedEventArgs e)
         {
             if (!_isOnline) return;
-            Publicar($"HEARTBEAT|{_idSensor}", $"{_zona}.CONTROL");
+            await Publicar($"HEARTBEAT|{_idSensor}", $"{_zona}.CONTROL");
         }
 
-        static void Publicar(string mensagem, string routingKey)
+        static async Task Publicar(string mensagem, string routingKey)
         {
             if (_channel == null || !_isOnline) return;
             try
             {
                 var body = Encoding.UTF8.GetBytes(mensagem);
-                _channel.BasicPublishAsync(EXCHANGE, routingKey, body).GetAwaiter().GetResult();
+                await _channel.BasicPublishAsync(EXCHANGE, routingKey, body);
             }
             catch { AlterarEstado(false, "FALHA BROKER"); }
         }
@@ -352,7 +352,7 @@ namespace sensor
             _encerrando = true;
             foreach (var t in _timersDados) t.Stop();
             _timerHeartbeat?.Stop();
-            if (_isOnline) Publicar($"BYE|{_idSensor}", $"{_zona}.CONTROL");
+            if (_isOnline) _ = Publicar($"BYE|{_idSensor}", $"{_zona}.CONTROL");
             AlterarEstado(false, "DESLIGADO");
             Thread.Sleep(500);
             Environment.Exit(0);

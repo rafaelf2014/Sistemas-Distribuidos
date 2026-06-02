@@ -1,0 +1,122 @@
+services:
+
+  preprocessamento:
+    build:
+      context: .
+      dockerfile: PreProcessamento.Dockerfile
+    restart: unless-stopped
+
+  gateway_001:
+    build:
+      context: .
+      dockerfile: Gateway.Dockerfile
+      args:
+        GATEWAY_DIR: Gateway_001
+    environment:
+      RABBITMQ_HOST: PC3_IP
+      SERVER_IP: PC3_IP
+      PREPROCESSAMENTO_GRPC_URL: http://preprocessamento:50051
+      ANALISE_GRPC_URL: http://PC3_IP:50052
+    depends_on:
+      - preprocessamento
+    restart: unless-stopped
+
+  sensor_001:
+    build:
+      context: .
+      dockerfile: Sensor.Dockerfile
+      args:
+        SENSOR_DIR: Sensor_001
+    environment:
+      RABBITMQ_HOST: PC3_IP
+    restart: unless-stopped
+
+  sensor_002:
+    build:
+      context: .
+      dockerfile: Sensor.Dockerfile
+      args:
+        SENSOR_DIR: Sensor_002
+    environment:
+      RABBITMQ_HOST: PC3_IP
+    restart: unless-stopped
+
+  sensor_003:
+    build:
+      context: .
+      dockerfile: Sensor.Dockerfile
+      args:
+        SENSOR_DIR: Sensor_003
+    environment:
+      RABBITMQ_HOST: PC3_IP
+    restart: unless-stopped
+
+  sensor_004:
+    build:
+      context: .
+      dockerfile: Sensor.Dockerfile
+      args:
+        SENSOR_DIR: Sensor_004
+    environment:
+      RABBITMQ_HOST: PC3_IP
+    restart: unless-stopped
+
+  sensor_005:
+    build:
+      context: .
+      dockerfile: Sensor.Dockerfile
+      args:
+        SENSOR_DIR: Sensor_005
+    environment:
+      RABBITMQ_HOST: PC3_IP
+    restart: unless-stopped
+
+  sensor_006:
+    build:
+      context: .
+      dockerfile: Sensor.Dockerfile
+      args:
+        SENSOR_DIR: Sensor_006
+    environment:
+      RABBITMQ_HOST: PC3_IP
+    restart: unless-stopped
+
+  sensor_007:
+    build:
+      context: .
+      dockerfile: Sensor.Dockerfile
+      args:
+        SENSOR_DIR: Sensor_007
+    environment:
+      RABBITMQ_HOST: PC3_IP
+    restart: unless-stopped
+
+  sensor_008:
+    build:
+      context: .
+      dockerfile: Sensor.Dockerfile
+      args:
+        SENSOR_DIR: Sensor_008
+    environment:
+      RABBITMQ_HOST: PC3_IP
+    restart: unless-stopped
+
+  sensor_009:
+    build:
+      context: .
+      dockerfile: Sensor.Dockerfile
+      args:
+        SENSOR_DIR: Sensor_009
+    environment:
+      RABBITMQ_HOST: PC3_IP
+    restart: unless-stopped
+
+  sensor_010:
+    build:
+      context: .
+      dockerfile: Sensor.Dockerfile
+      args:
+        SENSOR_DIR: Sensor_010
+    environment:
+      RABBITMQ_HOST: PC3_IP
+    restart: unless-stopped

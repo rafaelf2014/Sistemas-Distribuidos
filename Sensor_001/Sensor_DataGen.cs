@@ -196,7 +196,7 @@ namespace sensor
             }
         }
 
-        static void GerarEEnviarDado(SensorConfig cfg)
+        static async Task GerarEEnviarDado(SensorConfig cfg)
         {
             if (!_isOnline) return;
 
@@ -219,7 +219,7 @@ namespace sensor
             }
 
             RegistarLog($"{tipo}: {val}{evTag}");
-            Publicar($"DATA_SEND|{_idSensor}|{tipo}|{val}|{ts}", $"{_zona}.{tipo}");
+            await Publicar($"DATA_SEND|{_idSensor}|{tipo}|{val}|{ts}", $"{_zona}.{tipo}");
         }
 
         #endregion

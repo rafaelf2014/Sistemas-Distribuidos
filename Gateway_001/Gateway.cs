@@ -87,11 +87,13 @@ partial class MyTcpListener
     private record LeituraFinal(string SensorId, string Zona, string TipoDado, string Unidade,
                                  double Valor, DateTime Timestamp, float Qualidade,
                                  double? AnomalyScore, bool IsAlarm);
-    static readonly ConcurrentDictionary<string, ConcurrentQueue<LeituraBuffer>> _buffer       = new();
-    static readonly ConcurrentDictionary<string, DateTime>                        _bufferInicio = new();
+
+    private record BufferEntry(ConcurrentQueue<LeituraBuffer> Queue, DateTime Inicio);
+    static readonly ConcurrentDictionary<string, BufferEntry> _buffer = new();
 
     // Retry queue: JSON strings of batches that failed to reach the server
-    const int MaxPendentes = 1000;
+    const int MaxPendentes  = 1000;
+    const int MaxRawBuffer  = 500;
     static readonly ConcurrentQueue<string>                   _pendentesJson = new();
 
     // Raw-format messages (JSON/XML/QueryString/Hex) waiting for PreProcessamento
@@ -283,9 +285,12 @@ partial class MyTcpListener
 
         var cfg = JsonSerializer.Deserialize<ConfigGateway>(File.ReadAllText(caminho), _jsonRead)!;
         _gatewayId       = cfg.GatewayId;
-        _serverIp        = cfg.ServerIp;
-        _rabbitMqHost    = cfg.RabbitMqHost;
+        _serverIp        = Environment.GetEnvironmentVariable("SERVER_IP")     ?? cfg.ServerIp;
+        _rabbitMqHost    = Environment.GetEnvironmentVariable("RABBITMQ_HOST") ?? cfg.RabbitMqHost;
         _zonasSubscritas = cfg.ZonasSubscritas;
+
+        string preProc = Environment.GetEnvironmentVariable("PREPROCESSAMENTO_GRPC_URL") ?? cfg.PreProcessamentoGrpcUrl;
+        string analise = Environment.GetEnvironmentVariable("ANALISE_GRPC_URL")           ?? cfg.AnaliseGrpcUrl;
 
         foreach (var td in cfg.TiposDados)
         {
@@ -296,9 +301,9 @@ partial class MyTcpListener
 
         try
         {
-            var canal = GrpcChannel.ForAddress(cfg.PreProcessamentoGrpcUrl);
+            var canal = GrpcChannel.ForAddress(preProc);
             _grpcClient = new PreProcessamentoService.PreProcessamentoServiceClient(canal);
-            RegistarLogEsquerda($"[gRPC] Canal PreProcessamento iniciado: {cfg.PreProcessamentoGrpcUrl}");
+            RegistarLogEsquerda($"[gRPC] Canal PreProcessamento iniciado: {preProc}");
         }
         catch (Exception ex)
         {
@@ -307,9 +312,9 @@ partial class MyTcpListener
 
         try
         {
-            var canalAnalise = GrpcChannel.ForAddress(cfg.AnaliseGrpcUrl);
+            var canalAnalise = GrpcChannel.ForAddress(analise);
             _analiseClient = new AnaliseService.AnaliseServiceClient(canalAnalise);
-            RegistarLogEsquerda($"[gRPC] Canal Análise iniciado: {cfg.AnaliseGrpcUrl}");
+            RegistarLogEsquerda($"[gRPC] Canal Análise iniciado: {analise}");
         }
         catch (Exception ex)
         {
@@ -454,17 +459,13 @@ partial class MyTcpListener
     static void AdicionarAoBuffer(string sensorId, string zona, string tipoDado, double valor, DateTime timestamp, bool isAlarm = false)
     {
         string key   = $"{sensorId}.{tipoDado}";
-        var    queue = _buffer.GetOrAdd(key, k =>
-        {
-            _bufferInicio[k] = DateTime.Now;
-            return new ConcurrentQueue<LeituraBuffer>();
-        });
+        var    entry = _buffer.GetOrAdd(key, _ => new BufferEntry(new ConcurrentQueue<LeituraBuffer>(), DateTime.Now));
 
         string unidade = _unidades.TryGetValue(tipoDado, out string? u) ? u : "";
-        queue.Enqueue(new LeituraBuffer(sensorId, zona, tipoDado, unidade, valor, timestamp, isAlarm));
+        entry.Queue.Enqueue(new LeituraBuffer(sensorId, zona, tipoDado, unidade, valor, timestamp, isAlarm));
 
         // Immediate flush when chunk is full
-        if (_tipoConfigs.TryGetValue(tipoDado, out var cfg) && queue.Count >= cfg.ChunkSize)
+        if (_tipoConfigs.TryGetValue(tipoDado, out var cfg) && entry.Queue.Count >= cfg.ChunkSize)
             _ = Task.Run(() => FlushBuffer(key));
     }
 
@@ -488,8 +489,8 @@ partial class MyTcpListener
             string tipo = key[(dot + 1)..];
 
             if (!_tipoConfigs.TryGetValue(tipo, out var cfg)) continue;
-            if (!_bufferInicio.TryGetValue(key, out DateTime inicio)) continue;
-            if ((DateTime.Now - inicio).TotalMilliseconds >= cfg.IntervaloMaxMs)
+            if (!_buffer.TryGetValue(key, out var bufEntry)) continue;
+            if ((DateTime.Now - bufEntry.Inicio).TotalMilliseconds >= cfg.IntervaloMaxMs)
                 await FlushBuffer(key);
         }
 
@@ -498,10 +499,9 @@ partial class MyTcpListener
 
     static async Task FlushBuffer(string key)
     {
-        if (!_buffer.TryRemove(key, out var queue)) return;
-        _bufferInicio.TryRemove(key, out _);
+        if (!_buffer.TryRemove(key, out var entry)) return;
 
-        LeituraBuffer[] amostras = queue.ToArray();
+        LeituraBuffer[] amostras = entry.Queue.ToArray();
         if (amostras.Length == 0) return;
 
         var validas = new List<(LeituraBuffer Original, double ValorFinal, float Qualidade)>();
@@ -616,6 +616,12 @@ partial class MyTcpListener
             {
                 var r = resultado.Dados[i];
                 if (!r.Valido) { RegistarLogEsquerda($"[PreProc/Raw] Rejeitado: {r.Observacao}"); continue; }
+
+                if (!ValidarSensor(r.SensorId, r.Tipo))
+                {
+                    RegistarLogEsquerda($"[RAW] {r.SensorId}: dados rejeitados — sensor não registado ou tipo '{r.Tipo}' inválido.");
+                    continue;
+                }
 
                 DateTime ts = DateTime.TryParse(r.Timestamp, null,
                     DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
@@ -783,7 +789,14 @@ partial class MyTcpListener
                     // Unknown pipe token — try parsing as JSON/XML/QueryString/Hex control message first;
                     // if it's data, queue it for PreProcessamento format detection.
                     if (!TryParsarControlo(rawData, zonaRoteamento))
+                    {
+                        if (_rawBuffer.Count >= MaxRawBuffer)
+                        {
+                            _rawBuffer.TryDequeue(out _);
+                            RegistarLogEsquerda("[RAW] Fila cheia — payload mais antigo descartado.", true);
+                        }
                         _rawBuffer.Enqueue((zonaRoteamento, rawData));
+                    }
                     break;
             }
         }
@@ -804,7 +817,10 @@ partial class MyTcpListener
                 try
                 {
                     if (_serverTcp == null || !_serverTcp.Connected)
+                    {
                         await ReconectarAoServidor();
+                        await ReenviarRegistosSensoresInline();
+                    }
 
                     await _serverWriter!.WriteLineAsync(json);
                     return await _serverReader!.ReadLineAsync();
@@ -828,6 +844,32 @@ partial class MyTcpListener
         _serverWriter = new StreamWriter(stream, Encoding.UTF8) { AutoFlush = true };
         _serverReader = new StreamReader(stream, Encoding.UTF8);
         RegistarLogEsquerda($"[TCP] Ligado ao servidor {_serverIp}:14000.");
+    }
+
+    static async Task ReenviarRegistosSensoresInline()
+    {
+        List<(string Id, string Zona, string Tipos, bool VideoStream)> sensores;
+        lock (fileLock)
+            sensores = _sensoresCache
+                .Select(kv => (kv.Key, kv.Value.Zona, kv.Value.Tipos, kv.Value.VideoStream))
+                .ToList();
+
+        foreach (var (id, zona, tipos, video) in sensores)
+        {
+            string regJson = JsonSerializer.Serialize(new
+            {
+                tipo = "SENSOR_REG", gatewayId = _gatewayId,
+                sensorId = id, zona, tipos, videoStream = video
+            }, _jsonWrite);
+            try
+            {
+                await _serverWriter!.WriteLineAsync(regJson);
+                await _serverReader!.ReadLineAsync();
+            }
+            catch { return; }
+        }
+        if (sensores.Count > 0)
+            RegistarLogEsquerda($"[TCP] {sensores.Count} sensor(es) re-registado(s) após reconexão.");
     }
 
     static async Task EnviarBatchParaServidor(List<LeituraFinal> leituras)

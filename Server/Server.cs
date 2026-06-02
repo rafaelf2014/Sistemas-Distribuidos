@@ -167,7 +167,7 @@ partial class ServerCentral
         catch (Exception ex)
         {
             RegistarLog($"Erro batch INSERT: {ex.Message}");
-            return $"{{\"tipo\":\"ACK_BATCH\",\"status\":\"ERRO\",\"erro\":\"{ex.Message.Replace("\"", "'")}\"}}";
+            return JsonSerializer.Serialize(new { tipo = "ACK_BATCH", status = "ERRO", erro = ex.Message });
         }
 
         return $"{{\"tipo\":\"ACK_BATCH\",\"status\":\"OK\",\"count\":{count}}}";
@@ -181,7 +181,9 @@ partial class ServerCentral
         double valor    = root.TryGetProperty("valor",     out var v)  ? v.GetDouble()  : 0;
         string tsStr    = root.TryGetProperty("timestamp", out var ts) ? ts.GetString() ?? "" : "";
 
-        DateTime timestamp = DateTime.TryParse(tsStr, out DateTime dt) ? dt : DateTime.Now;
+        DateTime timestamp = DateTime.TryParse(tsStr, null,
+            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+            out DateTime dt) ? dt : DateTime.UtcNow;
 
         try
         {

@@ -151,7 +151,7 @@ namespace sensor
             _zona        = cfg.Zona;
             _videoStream = cfg.VideoStream;
             _zonaType    = cfg.ZonaType;
-            _brokerHost  = cfg.RabbitMqHost;
+            _brokerHost  = Environment.GetEnvironmentVariable("RABBITMQ_HOST") ?? cfg.RabbitMqHost;
             _dataTypes   = string.Join(",", cfg.Leituras.ConvertAll(l => l.Tipo.ToUpper()));
 
             return cfg.Leituras.ConvertAll(l => new SensorConfig

@@ -1,12 +1,12 @@
-# ONE HEALTH — DEV (tudo num PC)
+# ONE HEALTH — PC3 (Servidor + Analise + Frontend)
 # Requer: RabbitMQ e PostgreSQL a correr localmente
-# Uso: .\start-system.ps1
+# Uso: .\start-pc3.ps1
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 function Launch {
     param([string]$Name, [string]$Dir, [string]$Cmd)
-    $inner = "`$host.UI.RawUI.WindowTitle = 'ONE HEALTH | $Name'; cd '$Dir'; $Cmd"
+    $inner = "`$host.UI.RawUI.WindowTitle = 'PC3 | $Name'; cd '$Dir'; $Cmd"
     $p = Start-Process powershell -ArgumentList "-NoExit", "-Command", $inner -PassThru
     return $p.Id
 }
@@ -15,45 +15,27 @@ function Step { param([string]$Msg) Write-Host "  $Msg" -ForegroundColor Green }
 
 Write-Host ""
 Write-Host "  ╔══════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "  ║      ONE HEALTH — DEV (1 PC)         ║" -ForegroundColor Cyan
+Write-Host "  ║    ONE HEALTH — PC3 (Servidor)       ║" -ForegroundColor Cyan
 Write-Host "  ╚══════════════════════════════════════╝" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "  AVISO: RabbitMQ e PostgreSQL devem estar a correr." -ForegroundColor Yellow
 Write-Host ""
 
 $pids = @()
 
-Write-Host "  [1/5] Servicos gRPC" -ForegroundColor Yellow
-$pids += Launch "PreProcessamento" "$root\PreProcessamento" "dotnet run"
-Step "PreProcessamento  (porta 50051)"
-Start-Sleep -Seconds 2
-
+Write-Host "  [1/3] ServicoAnalise (Python)" -ForegroundColor Yellow
 $pids += Launch "ServicoAnalise" "$root\ServicoAnalise" "python server.py"
 Step "ServicoAnalise    (porta 50052)"
 Start-Sleep -Seconds 4
 
 Write-Host ""
-Write-Host "  [2/5] Servidor Central" -ForegroundColor Yellow
+Write-Host "  [2/3] Servidor Central" -ForegroundColor Yellow
 $pids += Launch "Server" "$root\Server" "dotnet run"
 Step "Server            (TCP 14000 / API 8080)"
 Start-Sleep -Seconds 4
 
 Write-Host ""
-Write-Host "  [3/5] Gateway" -ForegroundColor Yellow
-$pids += Launch "Gateway_001" "$root\Gateway_001" "dotnet run"
-Step "Gateway_001"
-Start-Sleep -Seconds 3
-
-Write-Host ""
-Write-Host "  [4/5] Sensores" -ForegroundColor Yellow
-foreach ($n in 1..4) {
-    $id = "S00$n"
-    $dir = "Sensor_00$n"
-    $pids += Launch "Sensor $id" "$root\$dir" "dotnet run"
-    Step "$dir iniciado"
-}
-Start-Sleep -Seconds 2
-
-Write-Host ""
-Write-Host "  [5/5] Frontend" -ForegroundColor Yellow
+Write-Host "  [3/3] Frontend" -ForegroundColor Yellow
 $pids += Launch "Frontend" "$root\Frontend" "npm run dev"
 Step "Frontend          (http://localhost:5173)"
 
@@ -61,7 +43,7 @@ $pids | Out-File "$root\.running-pids" -Encoding utf8
 
 Write-Host ""
 Write-Host "  ╔══════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "  ║         Sistema iniciado.            ║" -ForegroundColor Cyan
+Write-Host "  ║         PC3 iniciado.                ║" -ForegroundColor Cyan
 Write-Host "  ╚══════════════════════════════════════╝" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  Frontend  ->  http://localhost:5173" -ForegroundColor White

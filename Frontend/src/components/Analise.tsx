@@ -386,7 +386,7 @@ export default function AnaliseView() {
                     background: "var(--surface)", border: "1px solid var(--border-2)",
                     borderRadius: "8px", color: "var(--text)", fontSize: "0.85rem",
                   }}
-                  formatter={(v: number) => [v, "Anomalias"]}
+                  formatter={(v) => [Number(v ?? 0), "Anomalias"]}
                 />
                 <Bar dataKey="count" radius={[4, 4, 0, 0]}>
                   {chartData.map((entry, i) => (

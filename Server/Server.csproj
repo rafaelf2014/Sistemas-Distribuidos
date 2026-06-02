@@ -21,7 +21,7 @@
     <PackageReference Include="Npgsql" Version="10.0.2" />
     <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="7.6.3" />
     <PackageReference Include="OpenCvSharp4" Version="4.13.0.20260330" />
-    <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.13.0.20260302" />
+    <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.13.0.20260302" Condition="$([MSBuild]::IsOSPlatform('Windows'))" />
   </ItemGroup>
 
 </Project>

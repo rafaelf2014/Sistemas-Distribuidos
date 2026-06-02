@@ -1,12 +1,19 @@
-# ONE HEALTH — DEV (tudo num PC)
-# Requer: RabbitMQ e PostgreSQL a correr localmente
-# Uso: .\start-system.ps1
+# ONE HEALTH — PC1 (Gateway_001 + Sensores S001-S004)
+# Uso: .\start-pc1.ps1 -Pc3Ip "192.168.1.X"
+
+param([string]$Pc3Ip = "127.0.0.1")
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 
+# Injetar IPs via variáveis de ambiente (lidas pelo Gateway e Sensores)
+$env:RABBITMQ_HOST            = $Pc3Ip
+$env:SERVER_IP                = $Pc3Ip
+$env:ANALISE_GRPC_URL         = "http://${Pc3Ip}:50052"
+$env:PREPROCESSAMENTO_GRPC_URL = "http://localhost:50051"
+
 function Launch {
     param([string]$Name, [string]$Dir, [string]$Cmd)
-    $inner = "`$host.UI.RawUI.WindowTitle = 'ONE HEALTH | $Name'; cd '$Dir'; $Cmd"
+    $inner = "`$host.UI.RawUI.WindowTitle = 'PC1 | $Name'; cd '$Dir'; $Cmd"
     $p = Start-Process powershell -ArgumentList "-NoExit", "-Command", $inner -PassThru
     return $p.Id
 }
@@ -15,58 +22,41 @@ function Step { param([string]$Msg) Write-Host "  $Msg" -ForegroundColor Green }
 
 Write-Host ""
 Write-Host "  ╔══════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "  ║      ONE HEALTH — DEV (1 PC)         ║" -ForegroundColor Cyan
+Write-Host "  ║    ONE HEALTH — PC1                  ║" -ForegroundColor Cyan
+Write-Host "  ║    PC3 (servidor): $Pc3Ip" -ForegroundColor Cyan
 Write-Host "  ╚══════════════════════════════════════╝" -ForegroundColor Cyan
 Write-Host ""
 
 $pids = @()
 
-Write-Host "  [1/5] Servicos gRPC" -ForegroundColor Yellow
+Write-Host "  [1/3] PreProcessamento" -ForegroundColor Yellow
 $pids += Launch "PreProcessamento" "$root\PreProcessamento" "dotnet run"
 Step "PreProcessamento  (porta 50051)"
-Start-Sleep -Seconds 2
-
-$pids += Launch "ServicoAnalise" "$root\ServicoAnalise" "python server.py"
-Step "ServicoAnalise    (porta 50052)"
-Start-Sleep -Seconds 4
-
-Write-Host ""
-Write-Host "  [2/5] Servidor Central" -ForegroundColor Yellow
-$pids += Launch "Server" "$root\Server" "dotnet run"
-Step "Server            (TCP 14000 / API 8080)"
-Start-Sleep -Seconds 4
-
-Write-Host ""
-Write-Host "  [3/5] Gateway" -ForegroundColor Yellow
-$pids += Launch "Gateway_001" "$root\Gateway_001" "dotnet run"
-Step "Gateway_001"
 Start-Sleep -Seconds 3
 
 Write-Host ""
-Write-Host "  [4/5] Sensores" -ForegroundColor Yellow
-foreach ($n in 1..4) {
+Write-Host "  [2/3] Gateway_001" -ForegroundColor Yellow
+$pids += Launch "Gateway_001" "$root\Gateway_001" "dotnet run"
+Step "Gateway_001  ->  RabbitMQ @ $Pc3Ip"
+Start-Sleep -Seconds 3
+
+Write-Host ""
+Write-Host "  [3/3] Sensores S001-S010" -ForegroundColor Yellow
+foreach ($n in 1..9) {
     $id = "S00$n"
     $dir = "Sensor_00$n"
     $pids += Launch "Sensor $id" "$root\$dir" "dotnet run"
     Step "$dir iniciado"
 }
-Start-Sleep -Seconds 2
-
-Write-Host ""
-Write-Host "  [5/5] Frontend" -ForegroundColor Yellow
-$pids += Launch "Frontend" "$root\Frontend" "npm run dev"
-Step "Frontend          (http://localhost:5173)"
+$pids += Launch "Sensor S010" "$root\Sensor_010" "dotnet run"
+Step "Sensor_010 iniciado"
 
 $pids | Out-File "$root\.running-pids" -Encoding utf8
 
 Write-Host ""
 Write-Host "  ╔══════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "  ║         Sistema iniciado.            ║" -ForegroundColor Cyan
+Write-Host "  ║  PC1 iniciado (GW1 + S001-010) -> $Pc3Ip" -ForegroundColor Cyan
 Write-Host "  ╚══════════════════════════════════════╝" -ForegroundColor Cyan
-Write-Host ""
-Write-Host "  Frontend  ->  http://localhost:5173" -ForegroundColor White
-Write-Host "  API REST  ->  http://localhost:8080" -ForegroundColor White
-Write-Host "  RabbitMQ  ->  http://localhost:15672" -ForegroundColor White
 Write-Host ""
 Write-Host "  Para parar: .\stop-system.ps1" -ForegroundColor DarkGray
 Write-Host ""

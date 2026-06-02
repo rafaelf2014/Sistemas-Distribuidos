@@ -6,7 +6,7 @@ import AlarmLog     from "./components/AlarmLog";
 import Analise      from "./components/Analise";
 import AnomaliasMl  from "./components/AnomaliasMl";
 import Login        from "./components/Login";
-import { api, auth } from "./api";
+import { auth } from "./api";
 import "./App.css";
 
 type Tab = "dashboard" | "sensores" | "dados" | "alarmes" | "analise" | "anomalias";

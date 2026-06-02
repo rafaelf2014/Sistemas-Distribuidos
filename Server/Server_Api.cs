@@ -153,7 +153,6 @@ partial class ServerCentral
                 "/api/stream/start"  => await HandleStreamStart(req),
                 "/api/stream/stop"   => HandleStreamStop(query),
                 "/api/stream/estado" => HandleStreamEstado(),
-                "/api/shutdown"      => HandleShutdown(),
                 _                    => JsonSerializer.Serialize(new { erro = "Endpoint não encontrado." }, _jsonOpts)
             };
 
@@ -447,19 +446,6 @@ partial class ServerCentral
         {
             return JsonSerializer.Serialize(new { erro = ex.Status.Detail }, _jsonOpts);
         }
-    }
-
-    // GET /api/shutdown
-    static string HandleShutdown()
-    {
-        RegistarLog("[API] Shutdown solicitado pelo frontend.");
-        Task.Delay(200).ContinueWith(_ =>
-        {
-            _isOnline = false;
-            _server?.Stop();
-            Environment.Exit(0);
-        });
-        return JsonSerializer.Serialize(new { ok = true }, _jsonOpts);
     }
 
     // POST /api/stream/start  body: { "sensor": "<id>" }
