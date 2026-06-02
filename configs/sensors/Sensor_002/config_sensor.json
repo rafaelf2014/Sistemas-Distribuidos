@@ -1,0 +1,13 @@
+{
+  "sensorId": "S002",
+  "zona": "CHAVES_NORTE",
+  "zonaType": "residencial",
+  "videoStream": false,
+  "rabbitMqHost": "localhost",
+  "formato": "json",
+  "leituras": [
+    { "tipo": "TEMP",  "intervaloMs": 5000, "unidade": "F" },
+    { "tipo": "HUM",   "intervaloMs": 5000 },
+    { "tipo": "CO2",   "intervaloMs": 5000 }
+  ]
+}

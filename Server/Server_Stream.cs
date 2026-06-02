@@ -9,17 +9,18 @@ partial class ServerCentral
 {
     #region CAMPOS STREAM
 
-    static readonly ConcurrentDictionary<string, string> _gatewayIps = new();
+    readonly ConcurrentDictionary<string, string> _gatewayIps   = new();
+    readonly ConcurrentDictionary<string, int>    _gatewayPorts = new();
 
-    static volatile string _streamingSensorId = null;
-    static volatile bool _streamingAtivo    = false;
-    static readonly int  _udpStreamPort     = 15000;
+    volatile string _streamingSensorId = null;
+    volatile bool _streamingAtivo    = false;
+    readonly int  _udpStreamPort     = 15000;
 
     #endregion
 
     #region GESTÃO DE STREAM
 
-    static async Task IniciarStream(string sensorId)
+    async Task IniciarStream(string sensorId)
     {
         if (_streamingAtivo) { RegistarLog("Já existe um stream ativo."); return; }
         if (!_sensoresStream.TryGetValue(sensorId, out var info)) return;
@@ -31,7 +32,7 @@ partial class ServerCentral
         try
         {
             using var tcp = new TcpClient();
-            await tcp.ConnectAsync(gwIp, 14001);
+            await tcp.ConnectAsync(gwIp, _gatewayPorts.GetValueOrDefault(info.GatewayId, 14001));
             using var s   = tcp.GetStream();
             using var r   = new StreamReader(s);
             using var w   = new StreamWriter(s) { AutoFlush = true };
@@ -52,7 +53,7 @@ partial class ServerCentral
         catch (Exception ex) { RegistarLog($"Erro ao iniciar stream: {ex.Message}"); }
     }
 
-    static void PararStream()
+    void PararStream()
     {
         if (!_streamingAtivo || _streamingSensorId == null) return;
         string sensorId = _streamingSensorId;
@@ -62,7 +63,7 @@ partial class ServerCentral
         {
             try
             {
-                using var tcp = new TcpClient(gwIp, 14001);
+                using var tcp = new TcpClient(gwIp, _gatewayPorts.GetValueOrDefault(info.GatewayId, 14001));
                 using var s   = tcp.GetStream();
                 using var r   = new StreamReader(s);
                 using var w   = new StreamWriter(s) { AutoFlush = true };
@@ -77,7 +78,7 @@ partial class ServerCentral
         RegistarLog($"[VIDEO] Stream de {sensorId} terminado.");
     }
 
-    static void ReceberEMostrarStream(int udpPort)
+    void ReceberEMostrarStream(int udpPort)
     {
         UdpClient udp = null;
         try
@@ -110,7 +111,7 @@ partial class ServerCentral
         }
     }
 
-    static string ObterIpLocal()
+    string ObterIpLocal()
     {
         string? configured = Environment.GetEnvironmentVariable("SERVER_IP");
         if (!string.IsNullOrEmpty(configured)) return configured;

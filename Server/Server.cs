@@ -13,19 +13,21 @@ partial class ServerCentral
 {
     #region CAMPOS
 
-    private static readonly string connectionString =
+    private readonly string connectionString =
         Environment.GetEnvironmentVariable("DATABASE_URL")
         ?? "Host=localhost;Database=one_health;Username=postgres;Password=postgres";
 
-    static TcpListener? _server = null;
+    TcpListener? _server = null;
 
-    private static readonly ConcurrentDictionary<string, (string GatewayId, string Zona, string Tipos)> _sensoresStream = new();
+    private readonly ConcurrentDictionary<string, (string GatewayId, string Zona, string Tipos)> _sensoresStream = new();
 
     #endregion
 
     #region INICIALIZAÇÃO
 
-    public static async Task Main()
+    public static async Task Main() => await new ServerCentral().RunAsync();
+
+    public async Task RunAsync()
     {
         Console.CancelKeyPress += TratarEncerramento;
         InicializarBaseDeDados();
@@ -54,7 +56,7 @@ partial class ServerCentral
 
     #region HANDLER DE GATEWAYS
 
-    static async Task HandleGatewayAsync(TcpClient gatewayClient)
+    async Task HandleGatewayAsync(TcpClient gatewayClient)
     {
         string endpoint  = gatewayClient.Client.RemoteEndPoint?.ToString() ?? "?";
         string gatewayIp = ((IPEndPoint)gatewayClient.Client.RemoteEndPoint!).Address.ToString();
@@ -104,7 +106,7 @@ partial class ServerCentral
         finally { gatewayClient.Close(); }
     }
 
-    static async Task<string> HandleDataBatch(JsonElement root, string gatewayId)
+    async Task<string> HandleDataBatch(JsonElement root, string gatewayId)
     {
         if (!root.TryGetProperty("leituras", out var leituras) || leituras.ValueKind != JsonValueKind.Array)
             return "{\"tipo\":\"ACK_BATCH\",\"status\":\"ERRO\",\"erro\":\"Campo leituras ausente\"}";
@@ -173,7 +175,7 @@ partial class ServerCentral
         return $"{{\"tipo\":\"ACK_BATCH\",\"status\":\"OK\",\"count\":{count}}}";
     }
 
-    static async Task<string> HandleAlarmForward(JsonElement root, string gatewayId)
+    async Task<string> HandleAlarmForward(JsonElement root, string gatewayId)
     {
         string sensorId = root.TryGetProperty("sensorId",  out var s)  ? s.GetString()  ?? "" : "";
         string zona     = root.TryGetProperty("zona",      out var z)  ? z.GetString()  ?? "" : "";
@@ -211,13 +213,15 @@ partial class ServerCentral
         return "{\"tipo\":\"ACK_ALARM\",\"status\":\"OK\"}";
     }
 
-    static async Task<string> HandleSensorReg(JsonElement root, string gatewayId)
+    async Task<string> HandleSensorReg(JsonElement root, string gatewayId)
     {
         string sensorId    = root.TryGetProperty("sensorId",    out var s)  ? s.GetString()  ?? "" : "";
         string zona        = root.TryGetProperty("zona",        out var z)  ? z.GetString()  ?? "" : "";
         string tipos       = root.TryGetProperty("tipos",       out var td) ? td.GetString() ?? "" : "";
         bool   videoStream = root.TryGetProperty("videoStream", out var vs) ? vs.GetBoolean() : false;
+        int    cmdPort     = root.TryGetProperty("comandoPort", out var cp) ? cp.GetInt32()  : 14001;
 
+        _gatewayPorts[gatewayId] = cmdPort;
         if (videoStream)
             _sensoresStream[sensorId] = (gatewayId, zona, tipos);
 
@@ -253,7 +257,7 @@ partial class ServerCentral
         return "{\"tipo\":\"ACK_SENSOR_REG\",\"status\":\"OK\"}";
     }
 
-    static async Task<string> HandleSensorStatus(JsonElement root)
+    async Task<string> HandleSensorStatus(JsonElement root)
     {
         string sensorId = root.TryGetProperty("sensorId", out var s)  ? s.GetString() ?? "" : "";
         string estado   = root.TryGetProperty("estado",   out var e)  ? e.GetString() ?? "" : "";
@@ -282,7 +286,7 @@ partial class ServerCentral
 
     #region BASE DE DADOS
 
-    static void InicializarBaseDeDados()
+    void InicializarBaseDeDados()
     {
         try
         {
@@ -328,7 +332,7 @@ partial class ServerCentral
 
     #region ENCERRAMENTO
 
-    static void TratarEncerramento(object? sender, ConsoleCancelEventArgs args)
+    void TratarEncerramento(object? sender, ConsoleCancelEventArgs args)
     {
         args.Cancel = true;
         _isOnline = false;

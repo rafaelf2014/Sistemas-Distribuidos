@@ -1,0 +1,20 @@
+{
+  "gatewayId": "Gateway_002",
+  "serverIp": "127.0.0.1",
+  "rabbitMqHost": "localhost",
+  "zonasSubscritas": [ "VILAREAL_NORTE", "VILAREAL_SUL", "VILAREAL_CENTRO" ],
+  "preProcessamentoGrpcUrl": "http://localhost:50051",
+  "analiseGrpcUrl": "http://localhost:50052",
+  "comandoPort": 14002,
+  "tiposDados": [
+    { "tipo": "TEMP",  "unidade": "ºC",    "chunkSize": 10, "intervaloMaxMs": 60000, "modo": "agregado" },
+    { "tipo": "HUM",   "unidade": "%",     "chunkSize": 10, "intervaloMaxMs": 60000, "modo": "agregado" },
+    { "tipo": "CO2",   "unidade": "ppm",   "chunkSize": 10, "intervaloMaxMs": 60000, "modo": "agregado" },
+    { "tipo": "RUIDO", "unidade": "dB",    "chunkSize": 10, "intervaloMaxMs": 60000, "modo": "agregado" },
+    { "tipo": "LUMIN", "unidade": "lux",   "chunkSize": 10, "intervaloMaxMs": 60000, "modo": "agregado" },
+    { "tipo": "PART",  "unidade": "µg/m³", "chunkSize": 10, "intervaloMaxMs": 60000, "modo": "agregado" },
+    { "tipo": "NO2",   "unidade": "µg/m³", "chunkSize": 10, "intervaloMaxMs": 60000, "modo": "agregado" },
+    { "tipo": "O3",    "unidade": "ppb",   "chunkSize": 10, "intervaloMaxMs": 60000, "modo": "agregado" },
+    { "tipo": "WIND",  "unidade": "km/h",  "chunkSize": 10, "intervaloMaxMs": 60000, "modo": "agregado" }
+  ]
+}

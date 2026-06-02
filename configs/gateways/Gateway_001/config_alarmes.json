@@ -1,0 +1,35 @@
+{
+  "CHAVES_NORTE": {
+    "TEMP": -1,
+    "HUM": -1,
+    "CO2": -1,
+    "RUIDO": -1,
+    "LUMIN": -1,
+    "PART": -1,
+    "NO2": -1,
+    "O3": -1,
+    "WIND": -1
+  },
+  "CHAVES_SUL": {
+    "TEMP": -1,
+    "HUM": -1,
+    "CO2": -1,
+    "RUIDO": -1,
+    "LUMIN": -1,
+    "PART": -1,
+    "NO2": -1,
+    "O3": -1,
+    "WIND": -1
+  },
+  "CHAVES_CENTRO": {
+    "TEMP": -1,
+    "HUM": -1,
+    "CO2": -1,
+    "RUIDO": -1,
+    "LUMIN": -1,
+    "PART": -1,
+    "NO2": -1,
+    "O3": -1,
+    "WIND": -1
+  }
+}

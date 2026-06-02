@@ -18,25 +18,25 @@ using System.IdentityModel.Tokens.Jwt;
 // ==========================================
 partial class ServerCentral
 {
-    private static readonly string _analiseUrl = Environment.GetEnvironmentVariable("ANALISE_URL") ?? "http://localhost:50052";
-    private static AnaliseService.AnaliseServiceClient? _analiseClient;
+    private readonly string _analiseUrl = Environment.GetEnvironmentVariable("ANALISE_URL") ?? "http://localhost:50052";
+    private AnaliseService.AnaliseServiceClient? _analiseClient;
 
-    private static readonly JsonSerializerOptions _jsonOpts = new()
+    private readonly JsonSerializerOptions _jsonOpts = new()
     {
         WriteIndented = true,
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     };
 
-    private static readonly string _jwtSecret =
+    private readonly string _jwtSecret =
         Environment.GetEnvironmentVariable("JWT_SECRET") ?? "one-health-dev-secret-change-in-prod";
 
-    private static readonly Dictionary<string, string> _credenciais = new()
+    private readonly Dictionary<string, string> _credenciais = new()
     {
         [Environment.GetEnvironmentVariable("API_USER")     ?? "admin"] =
          Environment.GetEnvironmentVariable("API_PASSWORD") ?? "admin"
     };
 
-    static void IniciarApi()
+    void IniciarApi()
     {
         try
         {
@@ -52,7 +52,7 @@ partial class ServerCentral
         new Thread(ListenerApi) { IsBackground = true, Name = "REST-API" }.Start();
     }
 
-    static void ListenerApi()
+    void ListenerApi()
     {
         var listener = new HttpListener();
         listener.Prefixes.Add("http://localhost:8080/");
@@ -80,7 +80,7 @@ partial class ServerCentral
         listener.Stop();
     }
 
-    static async Task HandleRequestAsync(HttpListenerContext ctx)
+    async Task HandleRequestAsync(HttpListenerContext ctx)
     {
         var req = ctx.Request;
         var res = ctx.Response;
@@ -170,7 +170,7 @@ partial class ServerCentral
     }
 
     // GET /api/sensores — sensors from the sensores table + alarm count from leituras
-    static async Task<string> HandleSensores()
+    async Task<string> HandleSensores()
     {
         var lista = new List<object>();
         await using var conn = new NpgsqlConnection(connectionString);
@@ -205,7 +205,7 @@ partial class ServerCentral
     }
 
     // GET /api/dados?zona=&tipo=&sensor=&inicio=&fim=&limite=100
-    static async Task<string> HandleDados(System.Collections.Specialized.NameValueCollection q)
+    async Task<string> HandleDados(System.Collections.Specialized.NameValueCollection q)
     {
         string zona   = q["zona"]   ?? "";
         string tipo   = q["tipo"]   ?? "";
@@ -251,7 +251,7 @@ partial class ServerCentral
     }
 
     // GET /api/alarmes?zona=&tipo=&limite=50
-    static async Task<string> HandleAlarmes(System.Collections.Specialized.NameValueCollection q)
+    async Task<string> HandleAlarmes(System.Collections.Specialized.NameValueCollection q)
     {
         string zona  = q["zona"] ?? "";
         string tipo  = q["tipo"] ?? "";
@@ -285,7 +285,7 @@ partial class ServerCentral
     }
 
     // GET /api/anomalias?zona=&tipo=&min_score=0.5&limite=100
-    static async Task<string> HandleAnomalias(System.Collections.Specialized.NameValueCollection q)
+    async Task<string> HandleAnomalias(System.Collections.Specialized.NameValueCollection q)
     {
         string zona     = q["zona"] ?? "";
         string tipo     = q["tipo"] ?? "";
@@ -323,7 +323,7 @@ partial class ServerCentral
     }
 
     // GET /api/ml/status — returns whether the Isolation Forest is warm (has scored any reading recently)
-    static async Task<string> HandleMlStatus()
+    async Task<string> HandleMlStatus()
     {
         try
         {
@@ -342,7 +342,7 @@ partial class ServerCentral
     }
 
     // GET /api/analise?zona=&tipo=&sensor=&inicio=&fim=
-    static async Task<string> HandleAnalise(System.Collections.Specialized.NameValueCollection q)
+    async Task<string> HandleAnalise(System.Collections.Specialized.NameValueCollection q)
     {
         if (_analiseClient == null)
             return JsonSerializer.Serialize(new { erro = "ServicoAnalise não disponível." }, _jsonOpts);
@@ -383,7 +383,7 @@ partial class ServerCentral
     }
 
     // GET /api/padroes?zona=&tipo=&sensor=
-    static async Task<string> HandlePadroes(System.Collections.Specialized.NameValueCollection q)
+    async Task<string> HandlePadroes(System.Collections.Specialized.NameValueCollection q)
     {
         if (_analiseClient == null)
             return JsonSerializer.Serialize(new { erro = "ServicoAnalise não disponível." }, _jsonOpts);
@@ -417,7 +417,7 @@ partial class ServerCentral
     }
 
     // GET /api/previsao?zona=&tipo=&horas=6
-    static async Task<string> HandlePrevisao(System.Collections.Specialized.NameValueCollection q)
+    async Task<string> HandlePrevisao(System.Collections.Specialized.NameValueCollection q)
     {
         if (_analiseClient == null)
             return JsonSerializer.Serialize(new { erro = "ServicoAnalise não disponível." }, _jsonOpts);
@@ -449,7 +449,7 @@ partial class ServerCentral
     }
 
     // POST /api/stream/start  body: { "sensor": "<id>" }
-    static async Task<string> HandleStreamStart(HttpListenerRequest req)
+    async Task<string> HandleStreamStart(HttpListenerRequest req)
     {
         string sensorId;
         try
@@ -479,14 +479,14 @@ partial class ServerCentral
     }
 
     // GET /api/stream/stop?sensor=
-    static string HandleStreamStop(System.Collections.Specialized.NameValueCollection q)
+    string HandleStreamStop(System.Collections.Specialized.NameValueCollection q)
     {
         PararStream();
         return JsonSerializer.Serialize(new { ok = true }, _jsonOpts);
     }
 
     // POST /api/login
-    static async Task<(int status, string json)> HandleLogin(HttpListenerRequest req)
+    async Task<(int status, string json)> HandleLogin(HttpListenerRequest req)
     {
         using var reader = new System.IO.StreamReader(req.InputStream, req.ContentEncoding);
         string body = await reader.ReadToEndAsync();
@@ -507,7 +507,7 @@ partial class ServerCentral
         }
     }
 
-    static string GerarToken(string username)
+    string GerarToken(string username)
     {
         var key   = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwtSecret));
         var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
@@ -521,7 +521,7 @@ partial class ServerCentral
         return new JwtSecurityTokenHandler().WriteToken(token);
     }
 
-    static bool ValidarToken(HttpListenerRequest req)
+    bool ValidarToken(HttpListenerRequest req)
     {
         string? auth = req.Headers["Authorization"];
         if (string.IsNullOrEmpty(auth) || !auth.StartsWith("Bearer "))
@@ -549,7 +549,7 @@ partial class ServerCentral
     }
 
     // GET /api/stream/estado — debug: what does the server know about streams?
-    static string HandleStreamEstado()
+    string HandleStreamEstado()
     {
         return JsonSerializer.Serialize(new
         {
