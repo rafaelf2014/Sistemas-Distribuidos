@@ -5,7 +5,7 @@
     "zona": "CHAVES_NORTE",
     "tipos": "[TEMP,HUM,CO2]",
     "videoStream": true,
-    "lastSync": "2026-06-01T14:50:28"
+    "lastSync": "2026-06-02T11:34:50"
   },
   {
     "id": "S002",
@@ -13,7 +13,7 @@
     "zona": "CHAVES_NORTE",
     "tipos": "[TEMP,HUM,CO2]",
     "videoStream": false,
-    "lastSync": "2026-06-01T14:50:28"
+    "lastSync": "2026-06-02T11:34:53"
   },
   {
     "id": "S003",
@@ -21,7 +21,7 @@
     "zona": "CHAVES_NORTE",
     "tipos": "[RUIDO,LUMIN,PART]",
     "videoStream": false,
-    "lastSync": "2026-06-01T14:50:28"
+    "lastSync": "2026-06-02T11:34:55"
   },
   {
     "id": "S004",
@@ -29,11 +29,11 @@
     "zona": "CHAVES_NORTE",
     "tipos": "[NO2,O3,WIND]",
     "videoStream": false,
-    "lastSync": "2026-06-01T14:50:28"
+    "lastSync": "2026-06-02T11:34:51"
   },
   {
     "id": "S005",
-    "status": "ativo",
+    "status": "manutencao",
     "zona": "CHAVES_SUL",
     "tipos": "[TEMP,HUM,CO2]",
     "videoStream": false,

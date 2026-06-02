@@ -1,72 +1,25 @@
-# ONE HEALTH — DEV (tudo num PC)
-# Requer: RabbitMQ e PostgreSQL a correr localmente
-# Uso: .\start-system.ps1
-
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
-
-function Launch {
-    param([string]$Name, [string]$Dir, [string]$Cmd)
-    $inner = "`$host.UI.RawUI.WindowTitle = 'ONE HEALTH | $Name'; cd '$Dir'; $Cmd"
-    $p = Start-Process powershell -ArgumentList "-NoExit", "-Command", $inner -PassThru
-    return $p.Id
-}
-
-function Step { param([string]$Msg) Write-Host "  $Msg" -ForegroundColor Green }
-
-Write-Host ""
-Write-Host "  ╔══════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "  ║      ONE HEALTH — DEV (1 PC)         ║" -ForegroundColor Cyan
-Write-Host "  ╚══════════════════════════════════════╝" -ForegroundColor Cyan
-Write-Host ""
-
 $pids = @()
 
-Write-Host "  [1/5] Servicos gRPC" -ForegroundColor Yellow
-$pids += Launch "PreProcessamento" "$root\PreProcessamento" "dotnet run"
-Step "PreProcessamento  (porta 50051)"
-Start-Sleep -Seconds 2
+$pids += (Start-Process powershell -ArgumentList '-NoExit', '-Command', "cd '$root\PreProcessamento'; dotnet run" -PassThru).Id
+Start-Sleep 3
 
-$pids += Launch "ServicoAnalise" "$root\ServicoAnalise" "python server.py"
-Step "ServicoAnalise    (porta 50052)"
-Start-Sleep -Seconds 4
+$pids += (Start-Process powershell -ArgumentList '-NoExit', '-Command', "cd '$root\ServicoAnalise'; python server.py" -PassThru).Id
+Start-Sleep 5
 
-Write-Host ""
-Write-Host "  [2/5] Servidor Central" -ForegroundColor Yellow
-$pids += Launch "Server" "$root\Server" "dotnet run"
-Step "Server            (TCP 14000 / API 8080)"
-Start-Sleep -Seconds 4
+$pids += (Start-Process powershell -ArgumentList '-NoExit', '-Command', "cd '$root\Server'; dotnet run" -PassThru).Id
+Start-Sleep 4
 
-Write-Host ""
-Write-Host "  [3/5] Gateway" -ForegroundColor Yellow
-$pids += Launch "Gateway_001" "$root\Gateway_001" "dotnet run"
-Step "Gateway_001"
-Start-Sleep -Seconds 3
+$pids += (Start-Process powershell -ArgumentList '-NoExit', '-Command', "cd '$root\Gateway_001'; dotnet run" -PassThru).Id
+Start-Sleep 3
 
-Write-Host ""
-Write-Host "  [4/5] Sensores" -ForegroundColor Yellow
-foreach ($n in 1..4) {
-    $id = "S00$n"
-    $dir = "Sensor_00$n"
-    $pids += Launch "Sensor $id" "$root\$dir" "dotnet run"
-    Step "$dir iniciado"
-}
-Start-Sleep -Seconds 2
+$pids += (Start-Process powershell -ArgumentList '-NoExit', '-Command', "cd '$root\Sensor_001'; dotnet run" -PassThru).Id
+$pids += (Start-Process powershell -ArgumentList '-NoExit', '-Command', "cd '$root\Sensor_002'; dotnet run" -PassThru).Id
+$pids += (Start-Process powershell -ArgumentList '-NoExit', '-Command', "cd '$root\Sensor_003'; dotnet run" -PassThru).Id
+$pids += (Start-Process powershell -ArgumentList '-NoExit', '-Command', "cd '$root\Sensor_004'; dotnet run" -PassThru).Id
+Start-Sleep 2
 
-Write-Host ""
-Write-Host "  [5/5] Frontend" -ForegroundColor Yellow
-$pids += Launch "Frontend" "$root\Frontend" "npm run dev"
-Step "Frontend          (http://localhost:5173)"
+$pids += (Start-Process powershell -ArgumentList '-NoExit', '-Command', "cd '$root\Frontend'; npm run dev" -PassThru).Id
 
 $pids | Out-File "$root\.running-pids" -Encoding utf8
-
-Write-Host ""
-Write-Host "  ╔══════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "  ║         Sistema iniciado.            ║" -ForegroundColor Cyan
-Write-Host "  ╚══════════════════════════════════════╝" -ForegroundColor Cyan
-Write-Host ""
-Write-Host "  Frontend  ->  http://localhost:5173" -ForegroundColor White
-Write-Host "  API REST  ->  http://localhost:8080" -ForegroundColor White
-Write-Host "  RabbitMQ  ->  http://localhost:15672" -ForegroundColor White
-Write-Host ""
-Write-Host "  Para parar: .\stop-system.ps1" -ForegroundColor DarkGray
-Write-Host ""
+Write-Host 'Sistema iniciado. Para parar: .\stop-system.ps1'
