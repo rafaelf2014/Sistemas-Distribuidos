@@ -5,7 +5,7 @@
     "zona": "VILAREAL_NORTE",
     "tipos": "[TEMP,HUM,CO2]",
     "videoStream": false,
-    "lastSync": "2026-06-02T18:48:13"
+    "lastSync": "2026-06-03T09:41:46"
   },
   {
     "id": "S012",
@@ -13,7 +13,7 @@
     "zona": "VILAREAL_NORTE",
     "tipos": "[TEMP,HUM,CO2]",
     "videoStream": false,
-    "lastSync": "2026-06-02T18:48:13"
+    "lastSync": "2026-06-03T09:41:47"
   },
   {
     "id": "S013",
@@ -21,7 +21,7 @@
     "zona": "VILAREAL_NORTE",
     "tipos": "[RUIDO,LUMIN,PART]",
     "videoStream": false,
-    "lastSync": "2026-06-02T18:48:13"
+    "lastSync": "2026-06-03T09:41:46"
   },
   {
     "id": "S014",
@@ -29,7 +29,7 @@
     "zona": "VILAREAL_NORTE",
     "tipos": "[NO2,O3,WIND]",
     "videoStream": false,
-    "lastSync": "2026-06-02T18:48:13"
+    "lastSync": "2026-06-03T09:41:47"
   },
   {
     "id": "S015",
@@ -37,7 +37,7 @@
     "zona": "VILAREAL_SUL",
     "tipos": "[TEMP,HUM,CO2]",
     "videoStream": false,
-    "lastSync": "2026-06-02T18:48:13"
+    "lastSync": "2026-06-03T09:41:47"
   },
   {
     "id": "S016",
@@ -45,7 +45,7 @@
     "zona": "VILAREAL_SUL",
     "tipos": "[RUIDO,LUMIN,PART]",
     "videoStream": false,
-    "lastSync": "2026-06-02T18:48:13"
+    "lastSync": "2026-06-03T09:41:47"
   },
   {
     "id": "S017",
@@ -53,7 +53,7 @@
     "zona": "VILAREAL_SUL",
     "tipos": "[NO2,O3,WIND]",
     "videoStream": false,
-    "lastSync": "2026-06-02T18:48:13"
+    "lastSync": "2026-06-03T09:41:47"
   },
   {
     "id": "S018",
@@ -61,7 +61,7 @@
     "zona": "VILAREAL_CENTRO",
     "tipos": "[TEMP,HUM,CO2]",
     "videoStream": false,
-    "lastSync": "2026-06-02T18:48:13"
+    "lastSync": "2026-06-03T09:41:47"
   },
   {
     "id": "S019",
@@ -69,7 +69,7 @@
     "zona": "VILAREAL_CENTRO",
     "tipos": "[RUIDO,LUMIN,PART]",
     "videoStream": false,
-    "lastSync": "2026-06-02T18:48:13"
+    "lastSync": "2026-06-03T09:41:47"
   },
   {
     "id": "S020",
@@ -77,6 +77,6 @@
     "zona": "VILAREAL_CENTRO",
     "tipos": "[NO2,O3,WIND]",
     "videoStream": false,
-    "lastSync": "2026-06-02T18:48:13"
+    "lastSync": "2026-06-03T09:41:47"
   }
 ]

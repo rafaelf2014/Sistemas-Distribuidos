@@ -41,7 +41,7 @@ export default function Dashboard({ onNavigate }: Props) {
   const desativados  = sensores.filter(s => s.status === "desativado").length;
   const totalAlarmes = sensores.reduce((acc, s) => acc + s.totalAlarmes, 0);
 
-  // Zone summary — group sensors by zone
+  // Resumo por zona: agrupa os sensores por zona
   const zonaMap = new Map<string, { ativos: number; total: number; alarmes: number; tipos: Set<string> }>();
   for (const s of sensores) {
     if (!zonaMap.has(s.zona)) zonaMap.set(s.zona, { ativos: 0, total: 0, alarmes: 0, tipos: new Set() });

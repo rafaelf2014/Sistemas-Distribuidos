@@ -57,7 +57,7 @@ export default function DataChart() {
     }).catch(() => {});
   }, []);
 
-  // When zone changes, auto-select the first sensor in that zone
+  // Quando a zona muda, seleciona automaticamente o primeiro sensor dessa zona
   useEffect(() => {
     const primeiro = sensores.find(s => s.zona === zona)?.sensorId ?? "";
     setSensor(primeiro);
@@ -104,7 +104,7 @@ export default function DataChart() {
 
       {zona && dados.length > 0 && (
         <>
-          {/* Stats strip */}
+          {/* Faixa de estatisticas */}
           <div className="dc-stats card">
             <div className="dc-stat">
               <span className="dc-stat-label">Leituras</span>

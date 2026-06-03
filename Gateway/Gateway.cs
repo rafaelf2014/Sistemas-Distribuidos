@@ -17,6 +17,7 @@ using ServicoAnalise;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
 
+// Configuracao de um tipo de dado: unidade, tamanho do lote e tempo maximo de buffer.
 class TipoDadoConfig
 {
     [JsonPropertyName("tipo")]           public string Tipo           { get; set; } = "";
@@ -26,6 +27,8 @@ class TipoDadoConfig
     [JsonPropertyName("modo")]           public string Modo           { get; set; } = "agregado";
 }
 
+// Configuracao do gateway lida de config_gateway.json. comandoPort e a porta TCP onde
+// o gateway escuta pedidos de video do servidor (diferente por gateway na mesma maquina).
 class ConfigGateway
 {
     [JsonPropertyName("gatewayId")]               public string               GatewayId               { get; set; } = "Gateway_001";
@@ -38,6 +41,7 @@ class ConfigGateway
     [JsonPropertyName("tiposDados")]              public List<TipoDadoConfig> TiposDados              { get; set; } = new();
 }
 
+// Registo persistido de um sensor conhecido (espelha o ficheiro sensores.json).
 class SensorEntry
 {
     [JsonPropertyName("id")]          public string Id          { get; set; } = "";
@@ -52,6 +56,7 @@ partial class Gateway
 {
     #region CAMPOS
 
+    // Identidade e ligacoes do gateway, preenchidas a partir da configuracao.
     string       _gatewayId       = "Gateway_001";
     string       _serverIp        = "127.0.0.1";
     string       _rabbitMqHost    = "localhost";
@@ -61,6 +66,7 @@ partial class Gateway
     IConnection? _amqpConnection;
     IChannel?    _amqpChannel;
 
+    // Caminhos dos ficheiros de estado, todos dentro do diretorio de configuracao.
     readonly string pastaProjeto;
     readonly string caminhoSensores;
     readonly string caminhoAlarmes;
@@ -74,52 +80,56 @@ partial class Gateway
     readonly JsonSerializerOptions _jsonWrite  = new() { WriteIndented = false };
     readonly JsonSerializerOptions _jsonPretty = new() { WriteIndented = true };
 
+    // Cache em memoria do estado de cada sensor (persistida em sensores.json).
     readonly Dictionary<string, (string Status, string Zona, string Tipos, bool VideoStream, DateTime LastSync)>
         _sensoresCache = new();
 
-    readonly Dictionary<string, DateTime>                     _ultimoAlarme  = new();
-    readonly Dictionary<string, string>                       _unidades       = new();
-    readonly ConcurrentDictionary<string, TipoDadoConfig>     _tipoConfigs    = new();
-             Dictionary<string, Dictionary<string, double>>   _limitesAlarme  = new();
+    readonly Dictionary<string, DateTime>                     _ultimoAlarme  = new(); // cooldown de alarme por sensor.tipo
+    readonly Dictionary<string, string>                       _unidades       = new(); // unidade padrao por tipo
+    readonly ConcurrentDictionary<string, TipoDadoConfig>     _tipoConfigs    = new(); // config por tipo
+             Dictionary<string, Dictionary<string, double>>   _limitesAlarme  = new(); // limiar por zona e tipo
 
-    // In-memory chunk buffer â€” key = "sensorId.TIPO"
+    // Uma leitura em espera no buffer.
     private record LeituraBuffer(string SensorId, string Zona, string TipoDado, string Unidade, double Valor, DateTime Timestamp);
 
-    // Fully enriched reading ready to send to server
+    // Leitura ja normalizada e pronta a enviar para o servidor.
     private record LeituraFinal(string SensorId, string Zona, string TipoDado, string Unidade,
                                  double Valor, DateTime Timestamp, float Qualidade,
                                  double? AnomalyScore, bool IsAlarm);
 
+    // Buffer por chave "sensorId.TIPO". Guarda a fila de leituras e o instante de inicio,
+    // num so registo, para que remover ambos seja atomico.
     private record BufferEntry(ConcurrentQueue<LeituraBuffer> Queue, DateTime Inicio);
     readonly ConcurrentDictionary<string, BufferEntry> _buffer = new();
 
-    // Retry queue: JSON strings of batches that failed to reach the server
+    // Fila de reenvio: lotes em JSON que falharam a chegar ao servidor (persistida).
     const int MaxPendentes  = 1000;
     const int MaxRawBuffer  = 500;
     readonly ConcurrentQueue<string>                   _pendentesJson = new();
 
-    // Raw-format messages (JSON/XML/QueryString/Hex) waiting for PreProcessamento
+    // Mensagens em formato nao-pipe (json/xml/querystring/hex) a espera de normalizacao.
     readonly ConcurrentQueue<(string Zona, string RawPayload)> _rawBuffer = new();
 
-    // Persistent TCP connection to server
+    // Ligacao TCP persistente ao servidor central.
     TcpClient?    _serverTcp;
     StreamWriter? _serverWriter;
     StreamReader? _serverReader;
     readonly SemaphoreSlim _serverConnLock = new(1, 1);
 
-    // Flush loop
+    // Ciclo periodico de flush do buffer.
     CancellationTokenSource _cts       = new();
     Task                    _flushTask = Task.CompletedTask;
 
     System.Threading.Timer? _timerWatchdog;
     System.Threading.Timer? _timerDashboard;
 
+    // Clientes gRPC: normalizacao e analise/scoring.
     PreProcessamentoService.PreProcessamentoServiceClient? _grpcClient;
     AnaliseService.AnaliseServiceClient?                   _analiseClient;
 
     #endregion
 
-    #region INICIALIZAÃ‡ÃƒO
+    #region INICIALIZACAO
 
     public Gateway(string configDir)
     {
@@ -129,6 +139,7 @@ partial class Gateway
         caminhoPendentes = Path.Combine(pastaProjeto, "pendentes.json");
     }
 
+    // Ponto de entrada. Le o diretorio de configuracao do argumento.
     public static async Task Main(string[] args)
     {
         string configDir = args.Length > 0
@@ -137,6 +148,8 @@ partial class Gateway
         await new Gateway(configDir).RunAsync();
     }
 
+    // Arranque: carrega estado, inicia o watchdog, o dashboard e o listener de comandos,
+    // e entra no ciclo de ligacao ao broker.
     public async Task RunAsync()
     {
         Console.CancelKeyPress += TratarEncerramento;
@@ -145,6 +158,7 @@ partial class Gateway
         InicializarGateway();
         CarregarPendentes();
 
+        // Watchdog marca sensores sem heartbeat; dashboard redesenha periodicamente.
         _timerWatchdog  = new System.Threading.Timer(_ => VerificarSensoresPerdidos(), null, 30000, 30000);
         _timerDashboard = new System.Threading.Timer(_ => { lock (_consoleLock) { DesenharDashboard(); } }, null, 250, 250);
 
@@ -153,6 +167,8 @@ partial class Gateway
         await InicializarRabbitMQ();
     }
 
+    // Liga ao broker, cria uma fila por zona subscrita e consome as mensagens.
+    // Reconecta automaticamente se a ligacao cair.
     async Task InicializarRabbitMQ()
     {
         const string EXCHANGE = "one_health";
@@ -171,6 +187,7 @@ partial class Gateway
 
                 foreach (string zona in _zonasSubscritas)
                 {
+                    // Liga a fila ao exchange com o padrao {zona}.# (todas as mensagens da zona).
                     string queue = $"gateway.{_gatewayId}.{zona}";
                     await _amqpChannel.QueueDeclareAsync(queue, durable: true, exclusive: false, autoDelete: false);
                     await _amqpChannel.QueueBindAsync(queue, EXCHANGE, $"{zona}.#");
@@ -185,22 +202,22 @@ partial class Gateway
                             await _amqpChannel.BasicAckAsync(ea.DeliveryTag, false);
                     };
                     await _amqpChannel.BasicConsumeAsync(queue, autoAck: false, consumer: consumer);
-                    RegistarLogEsquerda($"[AMQP] Subscrito: {zona}");
+                    RegistarLogEsquerda($"Subscrito: {zona}");
                 }
 
                 _isOnline = true;
-                RegistarLogEsquerda($"[AMQP] Broker ligado. A escutar {_zonasSubscritas.Count} zona(s).");
+                RegistarLogEsquerda($"Broker ligado. A escutar {_zonasSubscritas.Count} zona(s).");
 
                 while (_amqpConnection?.IsOpen ?? false)
                     await Task.Delay(2000);
 
                 _isOnline = false;
-                RegistarLogEsquerda("[AMQP] LigaÃ§Ã£o perdida. A reconectar...");
+                RegistarLogEsquerda("Ligacao perdida. A reconectar...");
             }
             catch (Exception ex)
             {
                 _isOnline = false;
-                RegistarLogEsquerda($"[AMQP] Erro: {ex.Message}. A tentar em 5s...");
+                RegistarLogEsquerda($"Erro: {ex.Message}. A tentar em 5s...");
                 await Task.Delay(5000);
             }
             finally
@@ -215,6 +232,7 @@ partial class Gateway
 
     #region ALARMES
 
+    // Carrega os limiares de alarme do ficheiro, ou cria um vazio se nao existir.
     void InicializarFicheiroAlarmesJson()
     {
         lock (_alarmesLock)
@@ -242,6 +260,8 @@ partial class Gateway
             _jsonPretty));
     }
 
+    // Quando um sensor novo se anuncia, garante que existem entradas de alarme para a sua
+    // zona e tipos (com limiar -1, ou seja, desativado por omissao).
     void AutoPopularAlarmes(string zona, string tiposComBrackets)
     {
         string[] tipos = tiposComBrackets.Replace("[", "").Replace("]", "").Split(',');
@@ -274,8 +294,10 @@ partial class Gateway
 
     #endregion
 
-    #region CONFIGURAÃ‡ÃƒO DO GATEWAY
+    #region CONFIGURACAO DO GATEWAY
 
+    // Le config_gateway.json (cria um por omissao se faltar), prepara as unidades por tipo,
+    // abre os canais gRPC e arranca o ciclo de flush.
     void InicializarGateway()
     {
         string caminho = Path.Combine(pastaProjeto, "config_gateway.json");
@@ -287,13 +309,13 @@ partial class Gateway
                 GatewayId = _gatewayId,
                 TiposDados = new()
                 {
-                    new TipoDadoConfig { Tipo = "TEMP",  Unidade = "ÂºC",    ChunkSize = 10, IntervaloMaxMs = 60000 },
+                    new TipoDadoConfig { Tipo = "TEMP",  Unidade = "ºC",    ChunkSize = 10, IntervaloMaxMs = 60000 },
                     new TipoDadoConfig { Tipo = "HUM",   Unidade = "%",     ChunkSize = 10, IntervaloMaxMs = 60000 },
                     new TipoDadoConfig { Tipo = "CO2",   Unidade = "ppm",   ChunkSize = 10, IntervaloMaxMs = 60000 },
                     new TipoDadoConfig { Tipo = "RUIDO", Unidade = "dB",    ChunkSize = 10, IntervaloMaxMs = 60000 },
                     new TipoDadoConfig { Tipo = "LUMIN", Unidade = "lux",   ChunkSize = 10, IntervaloMaxMs = 60000 },
-                    new TipoDadoConfig { Tipo = "PART",  Unidade = "Âµg/mÂ³", ChunkSize = 10, IntervaloMaxMs = 60000 },
-                    new TipoDadoConfig { Tipo = "NO2",   Unidade = "Âµg/mÂ³", ChunkSize = 10, IntervaloMaxMs = 60000 },
+                    new TipoDadoConfig { Tipo = "PART",  Unidade = "µg/m³", ChunkSize = 10, IntervaloMaxMs = 60000 },
+                    new TipoDadoConfig { Tipo = "NO2",   Unidade = "µg/m³", ChunkSize = 10, IntervaloMaxMs = 60000 },
                     new TipoDadoConfig { Tipo = "O3",    Unidade = "ppb",   ChunkSize = 10, IntervaloMaxMs = 60000 },
                     new TipoDadoConfig { Tipo = "WIND",  Unidade = "km/h",  ChunkSize = 10, IntervaloMaxMs = 60000 },
                 }
@@ -303,6 +325,7 @@ partial class Gateway
 
         var cfg = JsonSerializer.Deserialize<ConfigGateway>(File.ReadAllText(caminho), _jsonRead)!;
         _gatewayId       = cfg.GatewayId;
+        // Variaveis de ambiente sobrepoem-se a config (deploy multi-PC).
         _serverIp        = Environment.GetEnvironmentVariable("SERVER_IP")     ?? cfg.ServerIp;
         _rabbitMqHost    = Environment.GetEnvironmentVariable("RABBITMQ_HOST") ?? cfg.RabbitMqHost;
         _comandoPort     = cfg.ComanodoPort;
@@ -333,11 +356,11 @@ partial class Gateway
         {
             var canalAnalise = GrpcChannel.ForAddress(analise);
             _analiseClient = new AnaliseService.AnaliseServiceClient(canalAnalise);
-            RegistarLogEsquerda($"[gRPC] Canal AnÃ¡lise iniciado: {analise}");
+            RegistarLogEsquerda($"[gRPC] Canal Analise iniciado: {analise}");
         }
         catch (Exception ex)
         {
-            RegistarLogEsquerda($"[gRPC] Falha ao iniciar canal AnÃ¡lise: {ex.Message}");
+            RegistarLogEsquerda($"[gRPC] Falha ao iniciar canal Analise: {ex.Message}");
         }
 
         _flushTask = Task.Run(() => LoopFlush(_cts.Token));
@@ -348,6 +371,7 @@ partial class Gateway
 
     #region REGISTO DE SENSORES
 
+    // Carrega a cache de sensores a partir do ficheiro no arranque.
     void InicializarSensoresJson()
     {
         lock (fileLock)
@@ -369,6 +393,7 @@ partial class Gateway
         }
     }
 
+    // Escreve toda a cache de sensores no ficheiro.
     void PersistirCacheParaJson()
     {
         var lista = _sensoresCache.Select(kv => new SensorEntry
@@ -385,6 +410,7 @@ partial class Gateway
             _jsonPretty));
     }
 
+    // Regista ou atualiza um sensor (ao receber HELLO) e notifica o servidor.
     void RegistarOuAtualizarSensor(string id, string zona, string tipos, bool videoStream)
     {
         lock (fileLock)
@@ -397,6 +423,7 @@ partial class Gateway
         _ = NotificarServidorStatus(id, "ativo");
     }
 
+    // Verifica se um sensor esta registado, ativo e produz o tipo de dado indicado.
     bool ValidarSensor(string id, string tipoDados)
     {
         if (string.IsNullOrEmpty(tipoDados)) return false;
@@ -408,6 +435,8 @@ partial class Gateway
         }
     }
 
+    // Atualiza o instante do ultimo contacto. Se o sensor estava em manutencao, recupera-o
+    // para ativo (um heartbeat depois de um timeout volta a por o sensor online).
     void AtualizarLastSync(string id)
     {
         bool promovido = false;
@@ -422,11 +451,12 @@ partial class Gateway
         }
         if (promovido)
         {
-            RegistarLogEsquerda($"[HEARTBEAT] {id} recuperado: manutencao â†’ ativo.");
+            RegistarLogEsquerda($"[HEARTBEAT] {id} recuperado: manutencao -> ativo.");
             _ = NotificarServidorStatus(id, "ativo");
         }
     }
 
+    // Muda o estado de um sensor (ex: desativado ao receber BYE) e notifica o servidor.
     void AtualizarEstadoSensor(string id, string estado)
     {
         lock (fileLock)
@@ -434,7 +464,7 @@ partial class Gateway
             if (_sensoresCache.TryGetValue(id, out var s))
                 _sensoresCache[id] = (estado, s.Zona, s.Tipos, s.VideoStream, s.LastSync);
             PersistirCacheParaJson();
-            RegistarLogEsquerda($"Sensor {id} â†’ {estado}.");
+            RegistarLogEsquerda($"Sensor {id} -> {estado}.");
         }
         _ = NotificarServidorStatus(id, estado);
     }
@@ -447,6 +477,8 @@ partial class Gateway
         }
     }
 
+    // Corre a cada 30s: marca como "manutencao" os sensores ativos sem heartbeat ha mais
+    // de 30 segundos e avisa o servidor.
     void VerificarSensoresPerdidos()
     {
         var perdidos = new List<string>();
@@ -474,6 +506,7 @@ partial class Gateway
 
     #region BUFFER
 
+    // Ciclo que verifica o buffer a cada 2 segundos.
     async Task LoopFlush(CancellationToken ct)
     {
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(2));
@@ -485,6 +518,7 @@ partial class Gateway
         catch (OperationCanceledException) { }
     }
 
+    // Coloca uma leitura no buffer da sua chave. Se o lote ficar cheio, faz flush imediato.
     void AdicionarAoBuffer(string sensorId, string zona, string tipoDado, double valor, DateTime timestamp, string? unidadeOverride = null)
     {
         string key   = $"{sensorId}.{tipoDado}";
@@ -493,14 +527,15 @@ partial class Gateway
         string unidade = unidadeOverride ?? (_unidades.TryGetValue(tipoDado, out string? u) ? u : "");
         entry.Queue.Enqueue(new LeituraBuffer(sensorId, zona, tipoDado, unidade, valor, timestamp));
 
-        // Immediate flush when chunk is full
         if (_tipoConfigs.TryGetValue(tipoDado, out var cfg) && entry.Queue.Count >= cfg.ChunkSize)
             _ = Task.Run(() => FlushBuffer(key));
     }
 
+    // Primeiro tenta reenviar lotes pendentes; depois faz flush por tempo dos buffers
+    // que ja passaram do intervalo maximo; por fim drena o buffer de formatos brutos.
     async Task VerificarFlushTodos()
     {
-        // Drain retry queue (stop if server still unreachable)
+        // Drena a fila de reenvio. Para no primeiro falhanco (servidor ainda inacessivel).
         int maxRetry = _pendentesJson.Count;
         for (int i = 0; i < maxRetry; i++)
         {
@@ -510,7 +545,7 @@ partial class Gateway
             RegistarLogDireita("[RETRY] Batch reenviado", $"ACK: {resp.Trim()}");
         }
 
-        // Time-based flush for slow sensors
+        // Flush por tempo dos sensores lentos.
         foreach (string key in _buffer.Keys.ToList())
         {
             int dot = key.IndexOf('.');
@@ -526,6 +561,8 @@ partial class Gateway
         await FlushRawBuffer();
     }
 
+    // Esvazia o buffer de uma chave, normaliza o lote no PreProcessamento e encaminha
+    // para o scoring e envio. TryRemove garante que so um flush processa o lote.
     async Task FlushBuffer(string key)
     {
         if (!_buffer.TryRemove(key, out var entry)) return;
@@ -563,6 +600,7 @@ partial class Gateway
             }
             catch (Exception ex)
             {
+                // Se a normalizacao falhar, segue com os valores brutos e qualidade reduzida.
                 RegistarLogEsquerda($"[gRPC] Falha: {ex.Message}. A usar valores brutos.");
                 validas.AddRange(amostras.Select(a => (a, a.Valor, 0.5f)));
             }
@@ -572,7 +610,6 @@ partial class Gateway
             validas.AddRange(amostras.Select(a => (a, a.Valor, 1.0f)));
         }
 
-        // Convert to final enriched records (alarm flag decided in ScoreEEnviar)
         var finais = validas.Select(v => new LeituraFinal(
             v.Original.SensorId, v.Original.Zona, v.Original.TipoDado, v.Original.Unidade,
             v.ValorFinal, v.Original.Timestamp, v.Qualidade,
@@ -583,9 +620,9 @@ partial class Gateway
             await ScoreEEnviar(finais);
     }
 
-    // Shared threshold-alarm + ML-scoring + send helper used by both FlushBuffer and FlushRawBuffer.
-    // Every reading reaches here already normalised to standard units, so the alarm
-    // check is format-agnostic and lives in exactly one place.
+    // Ponto unico por onde passam todos os caminhos de ingestao (pipe e formatos brutos).
+    // Avalia alarmes sobre valores ja normalizados, pede o scoring de anomalias ao
+    // ServicoAnalise e envia o lote ao servidor.
     async Task ScoreEEnviar(List<LeituraFinal> finais)
     {
         for (int i = 0; i < finais.Count; i++)
@@ -617,7 +654,7 @@ partial class Gateway
                         finais[i] = finais[i] with { AnomalyScore = a.Score };
                         if (a.IsAnomalia)
                             RegistarLogEsquerda(
-                                $"[ML] Anomalia: {finais[i].SensorId} {finais[i].TipoDado} score={a.Score:F2} â€” {a.Motivo}", true);
+                                $"[ML] Anomalia: {finais[i].SensorId} {finais[i].TipoDado} score={a.Score:F2} - {a.Motivo}", true);
                     }
                 }
             }
@@ -627,8 +664,8 @@ partial class Gateway
         await EnviarBatchParaServidor(finais);
     }
 
-    // Threshold-based edge alarm: value already normalised to standard units.
-    // Per (sensorId,tipoDado) cooldown stops the same condition spamming alarms across batches.
+    // Alarme por limiar: o valor ja vem em unidade padrao. O cooldown por sensor.tipo
+    // evita que a mesma condicao dispare alarmes repetidos entre lotes.
     bool VerificarAlarme(LeituraFinal f)
     {
         bool acima;
@@ -654,8 +691,8 @@ partial class Gateway
         return true;
     }
 
-    // Drains _rawBuffer, sends raw payloads to PreProcessamento for format detection,
-    // then routes validated readings through the normal ML-score + send pipeline.
+    // Drena o buffer de formatos brutos, envia-os ao PreProcessamento para detecao de
+    // formato e encaminha as leituras validas (e de sensores registados) pelo pipeline.
     async Task FlushRawBuffer()
     {
         if (_rawBuffer.IsEmpty || _grpcClient == null) return;
@@ -681,7 +718,7 @@ partial class Gateway
 
                 if (!ValidarSensor(r.SensorId, r.Tipo))
                 {
-                    RegistarLogEsquerda($"[RAW] {r.SensorId}: dados rejeitados â€” sensor nÃ£o registado ou tipo '{r.Tipo}' invÃ¡lido.");
+                    RegistarLogEsquerda($"[RAW] {r.SensorId}: dados rejeitados - sensor nao registado ou tipo '{r.Tipo}' invalido.");
                     continue;
                 }
 
@@ -699,8 +736,8 @@ partial class Gateway
         catch (Exception ex) { RegistarLogEsquerda($"[PreProc/Raw] gRPC falhou: {ex.Message}"); }
     }
 
-    // Tries to parse non-pipe control messages (HELLO / HEARTBEAT / BYE) in
-    // JSON, XML, or QueryString format. Returns true if a control message was handled.
+    // Tenta interpretar uma mensagem de controlo (HELLO/HEARTBEAT/BYE) em JSON, XML ou
+    // QueryString. Devolve true se reconheceu e tratou um comando de controlo.
     bool TryParsarControlo(string raw, string zonaRoteamento)
     {
         try
@@ -766,7 +803,8 @@ partial class Gateway
 
     #region HANDLER DE SENSORES
 
-
+    // Trata cada mensagem recebida do broker. As mensagens pipe (HELLO/DATA_SEND/etc) sao
+    // tratadas aqui; os outros formatos vao para o buffer bruto (PreProcessamento).
     void ProcessarMensagemSensor(string rawData, string zonaRoteamento)
     {
         try
@@ -794,9 +832,10 @@ partial class Gateway
                         string sensorId = parts[1];
                         string tipoDado = parts[2].ToUpper();
 
+                        // So aceita dados de sensores registados e com o tipo declarado.
                         if (!ValidarSensor(sensorId, tipoDado))
                         {
-                            RegistarLogEsquerda($"[WARN] {sensorId}: dados rejeitados â€” sensor nÃ£o registado ou tipo '{tipoDado}' invÃ¡lido.");
+                            RegistarLogEsquerda($"[WARN] {sensorId}: dados rejeitados. sensor nao registado ou tipo '{tipoDado}' invalido.");
                             break;
                         }
 
@@ -805,6 +844,7 @@ partial class Gateway
                             out DateTime ts) ? ts : DateTime.UtcNow;
                         string zona         = ObterZonaDoSensor(sensorId).ToUpper();
                         string unidadePadrao = _unidades.TryGetValue(tipoDado, out string? uPad) ? uPad : "";
+                        // O sexto campo (opcional) traz a unidade quando nao e a padrao.
                         string? unidadePipe  = parts.Length >= 6 && !string.IsNullOrEmpty(parts[5]) ? parts[5] : null;
                         string un            = unidadePipe ?? unidadePadrao;
 
@@ -822,14 +862,14 @@ partial class Gateway
                     break;
 
                 default:
-                    // Unknown pipe token â€” try parsing as JSON/XML/QueryString/Hex control message first;
-                    // if it's data, queue it for PreProcessamento format detection.
+                    // Token desconhecido: tenta como controlo noutro formato; se nao for,
+                    // trata como dados e coloca no buffer bruto para o PreProcessamento.
                     if (!TryParsarControlo(rawData, zonaRoteamento))
                     {
                         if (_rawBuffer.Count >= MaxRawBuffer)
                         {
                             _rawBuffer.TryDequeue(out _);
-                            RegistarLogEsquerda("[RAW] Fila cheia â€” payload mais antigo descartado.", true);
+                            RegistarLogEsquerda("[RAW] Fila cheia - payload mais antigo descartado.", true);
                         }
                         _rawBuffer.Enqueue((zonaRoteamento, rawData));
                     }
@@ -841,8 +881,10 @@ partial class Gateway
 
     #endregion
 
-    #region COMUNICAÃ‡ÃƒO COM SERVIDOR
+    #region COMUNICACAO COM SERVIDOR
 
+    // Envia uma mensagem ao servidor pela ligacao TCP persistente, com uma tentativa de
+    // reconexao. Devolve a resposta, ou null se nao conseguir entregar.
     async Task<string?> EnviarMensagemAoServidor(string json)
     {
         await _serverConnLock.WaitAsync();
@@ -882,6 +924,8 @@ partial class Gateway
         RegistarLogEsquerda($"[TCP] Ligado ao servidor {_serverIp}:14000.");
     }
 
+    // Apos reconectar, reenvia o registo de todos os sensores conhecidos, para o servidor
+    // recuperar o estado mesmo que tenha reiniciado durante a falha.
     async Task ReenviarRegistosSensoresInline()
     {
         List<(string Id, string Zona, string Tipos, bool VideoStream)> sensores;
@@ -905,9 +949,11 @@ partial class Gateway
             catch { return; }
         }
         if (sensores.Count > 0)
-            RegistarLogEsquerda($"[TCP] {sensores.Count} sensor(es) re-registado(s) apÃ³s reconexÃ£o.");
+            RegistarLogEsquerda($"[TCP] {sensores.Count} sensor(es) re-registados apos reconexao.");
     }
 
+    // Serializa o lote como DATA_BATCH e envia-o. Se falhar, guarda na fila de reenvio
+    // (descartando o mais antigo se a fila estiver cheia).
     async Task EnviarBatchParaServidor(List<LeituraFinal> leituras)
     {
         string json = JsonSerializer.Serialize(new
@@ -934,7 +980,7 @@ partial class Gateway
             if (_pendentesJson.Count >= MaxPendentes)
             {
                 _pendentesJson.TryDequeue(out _);
-                RegistarLogEsquerda("[TCP] Fila cheia â€” batch mais antigo descartado.", true);
+                RegistarLogEsquerda("[TCP] Fila cheia - batch mais antigo descartado.", true);
             }
             _pendentesJson.Enqueue(json);
             RegistarLogEsquerda($"[TCP] Batch retido ({leituras.Count} leituras).", true);
@@ -946,6 +992,7 @@ partial class Gateway
         }
     }
 
+    // Envia o registo de um sensor ao servidor (inclui a porta de comando deste gateway).
     async Task EnviarRegistoSensorParaServidor(string sensorId, string zona, string tipos, bool videoCapable)
     {
         string json = JsonSerializer.Serialize(new
@@ -960,6 +1007,7 @@ partial class Gateway
         await EnviarMensagemAoServidor(json);
     }
 
+    // Notifica o servidor de uma mudanca de estado de um sensor.
     async Task NotificarServidorStatus(string sensorId, string estado)
     {
         string json = JsonSerializer.Serialize(new
@@ -972,6 +1020,7 @@ partial class Gateway
         await EnviarMensagemAoServidor(json);
     }
 
+    // Recarrega os lotes pendentes do ficheiro no arranque.
     void CarregarPendentes()
     {
         if (!File.Exists(caminhoPendentes)) return;
@@ -984,6 +1033,7 @@ partial class Gateway
         catch { }
     }
 
+    // Guarda os lotes pendentes em ficheiro (ou apaga-o se a fila estiver vazia).
     void SalvarPendentes()
     {
         var lista = _pendentesJson.ToArray();
@@ -998,6 +1048,7 @@ partial class Gateway
 
     #region ENCERRAMENTO
 
+    // Trata o Ctrl+C: para o ciclo de flush, guarda alarmes e pendentes, e termina.
     void TratarEncerramento(object? sender, ConsoleCancelEventArgs args)
     {
         args.Cancel = true;
@@ -1020,4 +1071,3 @@ partial class Gateway
 
     #endregion
 }
-

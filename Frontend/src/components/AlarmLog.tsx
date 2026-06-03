@@ -43,7 +43,7 @@ export default function AlarmLog() {
     return () => clearInterval(id);
   }, [zona, tipo, limite]);
 
-  // Count by tipo for summary chips
+  // Conta os alarmes por tipo para os resumos
   const porTipo = TIPOS.reduce<Record<string, number>>((acc, t) => {
     acc[t] = alarmes.filter(a => a.tipoDado === t).length;
     return acc;

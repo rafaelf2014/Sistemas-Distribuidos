@@ -16,8 +16,10 @@ using Timer = System.Timers.Timer;
 
 namespace sensor
 {
-    #region CONFIG (DTOs)
+    // Objetos que espelham o ficheiro config_sensor.json lido no arranque.
+    #region CONFIG
 
+    // Uma leitura configurada: tipo de dado, intervalo de envio e unidade opcional.
     class LeituraConfig
     {
         [JsonPropertyName("tipo")]        public string Tipo        { get; set; } = "";
@@ -25,6 +27,8 @@ namespace sensor
         [JsonPropertyName("unidade")]     public string Unidade     { get; set; } = "";
     }
 
+    // Configuracao completa do sensor. O campo formato escolhe o formato de envio
+    // (pipe, json, xml, querystring ou hex).
     class ConfigSensor
     {
         [JsonPropertyName("sensorId")]     public string              SensorId     { get; set; } = "S???";
@@ -36,6 +40,7 @@ namespace sensor
         [JsonPropertyName("leituras")]     public List<LeituraConfig> Leituras     { get; set; } = new();
     }
 
+    // Versao interna de cada leitura, ja com o tipo em maiusculas.
     class SensorConfig
     {
         public string TipoDado    { get; set; } = "";
@@ -49,6 +54,7 @@ namespace sensor
     {
         #region CAMPOS
 
+        // Identidade e estado deste sensor, preenchidos a partir da configuracao.
         string _idSensor    = "S???";
         string _zona        = "DESCONHECIDA";
         bool   _videoStream = false;
@@ -56,21 +62,26 @@ namespace sensor
         string _brokerHost  = "localhost";
         string _formato     = "pipe";
 
+        // Diretorio de onde se le a configuracao.
         readonly string _configDir;
 
+        // Ligacao e canal ao broker RabbitMQ.
         IConnection? _connection;
         IChannel?    _channel;
 
+        // Temporizadores: um para o heartbeat, um por cada tipo de leitura.
         Timer? _timerHeartbeat;
         readonly List<Timer> _timersDados        = new();
         readonly int         _intervaloHeartbeat = 5000;
 
+        // Protege a escrita na consola partilhada pela TUI.
         private readonly object       _consoleLock = new object();
         private readonly List<string> _ultimosLogs = new();
 
         private readonly JsonSerializerOptions _jsonRead  = new() { PropertyNameCaseInsensitive = true };
         private readonly JsonSerializerOptions _jsonWrite = new() { WriteIndented = true };
 
+        // Estado de execucao partilhado por varias threads, por isso volatile.
         private volatile bool _isOnline   = false;
         private volatile bool _encerrando = false;
         private string _brokerLabel = "";
@@ -78,6 +89,7 @@ namespace sensor
 
         private readonly System.Text.StringBuilder _debugInput = new();
 
+        // Estado da transmissao de video.
         private volatile bool _streamingAtivo = false;
         private Thread?       _threadStream   = null;
 
@@ -85,8 +97,9 @@ namespace sensor
 
         #endregion
 
-        #region INICIALIZAÇÃO
+        #region INICIALIZACAO
 
+        // Ponto de entrada. Le o diretorio de configuracao do argumento e arranca o sensor.
         static async Task Main(string[] args)
         {
             string configDir = args.Length > 0
@@ -100,6 +113,8 @@ namespace sensor
             _configDir = Path.GetFullPath(configDir);
         }
 
+        // Ciclo principal: carrega config, arranca temporizadores e mantem a ligacao
+        // ao broker, reconectando sempre que cai.
         public async Task RunAsync()
         {
             Console.CancelKeyPress += TratarEncerramento;
@@ -121,6 +136,7 @@ namespace sensor
 
                     await _channel.ExchangeDeclareAsync(EXCHANGE, ExchangeType.Topic, durable: true, autoDelete: false);
 
+                    // Fila exclusiva onde o sensor recebe comandos do gateway (ex: iniciar video).
                     await _channel.QueueDeclareAsync($"commands.{_idSensor}", durable: false, exclusive: true, autoDelete: true);
                     var consumer = new AsyncEventingBasicConsumer(_channel);
                     consumer.ReceivedAsync += async (_, ea) =>
@@ -131,6 +147,7 @@ namespace sensor
                     };
                     await _channel.BasicConsumeAsync($"commands.{_idSensor}", autoAck: false, consumer: consumer);
 
+                    // Anuncia-se ao gateway com a lista de tipos que produz.
                     AlterarEstado(true, $"Broker ({_brokerHost})");
                     await Publicar($"HELLO|{_idSensor}|{_zona}|[{_dataTypes}]|{(_videoStream ? "true" : "false")}", $"{_zona}.CONTROL");
 
@@ -151,6 +168,7 @@ namespace sensor
             }
         }
 
+        // Le o config_sensor.json do diretorio. Se nao existir, cria um por omissao.
         List<SensorConfig> CarregarConfiguracoes()
         {
             string caminho = Path.Combine(_configDir, "config_sensor.json");
@@ -171,6 +189,7 @@ namespace sensor
             _videoStream = cfg.VideoStream;
             _zonaType    = cfg.ZonaType;
             _formato     = (cfg.Formato ?? "pipe").ToLowerInvariant();
+            // O host do broker pode ser sobreposto por variavel de ambiente (demo multi-PCs).
             _brokerHost  = Environment.GetEnvironmentVariable("RABBITMQ_HOST") ?? cfg.RabbitMqHost;
             _dataTypes   = string.Join(",", cfg.Leituras.ConvertAll(l => l.Tipo.ToUpper()));
 
@@ -182,6 +201,7 @@ namespace sensor
             });
         }
 
+        // Cria um temporizador para o heartbeat e um por cada tipo de leitura.
         void ConfigurarTemporizadores(List<SensorConfig> configs)
         {
             _timerHeartbeat = new Timer(_intervaloHeartbeat);
@@ -203,12 +223,14 @@ namespace sensor
 
         #region BROKER
 
+        // Envia periodicamente um heartbeat para o gateway saber que o sensor esta vivo.
         async void EnviarHeartbeatAutomatico(object? sender, ElapsedEventArgs e)
         {
             if (!_isOnline) return;
             await Publicar($"HEARTBEAT|{_idSensor}", $"{_zona}.CONTROL");
         }
 
+        // Publica uma mensagem no exchange com a chave de encaminhamento indicada.
         async Task Publicar(string mensagem, string routingKey)
         {
             if (_channel == null || !_isOnline) return;
@@ -224,6 +246,7 @@ namespace sensor
 
         #region STREAMING
 
+        // Interpreta os comandos recebidos do gateway (iniciar ou parar video).
         void ProcessarComando(string cmd)
         {
             string[] partes = cmd.Split('|');
@@ -242,6 +265,7 @@ namespace sensor
             }
         }
 
+        // Arranca a thread de captura e envio de video, se ainda nao estiver ativa.
         void IniciarStream(string serverIp, int udpPort)
         {
             if (_streamingAtivo) return;
@@ -257,6 +281,7 @@ namespace sensor
             RegistarLog("Stream de vídeo terminado.");
         }
 
+        // Captura a webcam, codifica cada frame em JPEG e envia-o por UDP ao servidor.
         void StreamarVideo(string serverIp, int udpPort)
         {
             try
@@ -282,6 +307,7 @@ namespace sensor
                     Cv2.ImEncode(".jpg", frame, out byte[] jpeg,
                         new ImageEncodingParam(ImwriteFlags.JpegQuality, 65));
 
+                    // So envia se couber em 60000 bytes (0.06 MB).
                     if (jpeg.Length <= 60000)
                         udpClient.Send(jpeg, jpeg.Length, endpoint);
 
@@ -296,6 +322,7 @@ namespace sensor
 
         #region TUI
 
+        // Atualiza o estado de ligacao e redesenha o painel.
         void AlterarEstado(bool status, string descricao)
         {
             _isOnline    = status;
@@ -303,6 +330,7 @@ namespace sensor
             lock (_consoleLock) { DesenharDashboard(); }
         }
 
+        // Acrescenta uma linha ao registo das ultimas leituras e redesenha.
         void RegistarLog(string mensagem)
         {
             lock (_consoleLock)
@@ -313,6 +341,7 @@ namespace sensor
             }
         }
 
+        // Desenha o painel de texto do sensor na consola.
         void DesenharDashboard()
         {
             try { Console.SetCursorPosition(0, 0); } catch { Console.Clear(); }
@@ -367,6 +396,7 @@ namespace sensor
 
         #region ENCERRAMENTO
 
+        // Trata o Ctrl+C: para os temporizadores, avisa o gateway com um BYE e termina.
         void TratarEncerramento(object? sender, ConsoleCancelEventArgs args)
         {
             args.Cancel = true;

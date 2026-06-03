@@ -1,7 +1,10 @@
 """
-ONE HEALTH — Serviço de Análise e Previsão (gRPC / Python)
+ONE HEALTH - Servico de Analise e Previsao (gRPC / Python)
 
-Gerar código gRPC a partir do proto (executar uma vez):
+Deteta anomalias (Isolation Forest), calcula estatisticas e padroes, e preve risco.
+Os modelos sao treinados a partir da base de dados.
+
+Gerar o codigo gRPC a partir do proto (executar uma vez):
     python -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. analysis.proto
 """
 
@@ -26,20 +29,21 @@ PORT         = 50052
 
 _pool: pg_pool.ThreadedConnectionPool = None
 
-# ── Isolation Forest models ────────────────────────────────────────────────────
-_models: dict       = {}   # tipo -> fitted IsolationForest
+# Modelos Isolation Forest, um por tipo de dado.
+_models: dict       = {}   # tipo -> modelo treinado
 _model_lock         = threading.Lock()
 TIPOS_SUPORTADOS    = ["TEMP", "HUM", "CO2", "RUIDO", "LUMIN", "PART", "NO2", "O3", "WIND"]
-MIN_AMOSTRAS        = 1440  # model considered warm above this count
-RETRAIN_INTERVAL    = 300  # seconds between background retrains
-CYCLE_SECS          = 7200  # simulated day cycle length in real seconds (2 hours)
+MIN_AMOSTRAS        = 1440  # numero minimo de amostras para o modelo ser considerado aquecido
+RETRAIN_INTERVAL    = 300  # segundos entre retreinos em segundo plano
+CYCLE_SECS          = 7200  # duracao do dia simulado, em segundos reais (2 horas)
 
 
+# Converte um instante na hora do dia simulado (0 a 24), para dar contexto temporal ao modelo.
 def _hora_simulada_de_dt(dt: datetime) -> float:
-    # Use Unix epoch (same baseline as SQL's EXTRACT(epoch FROM timestamp))
-    # so training and scoring always agree, regardless of timezone offset.
     return (int(dt.timestamp()) % CYCLE_SECS) / CYCLE_SECS * 24.0
 
+# Carrega amostras de treino da base de dados para um tipo. Cada amostra e
+# [valor, seno da hora, cosseno da hora].
 def _carregar_amostras_treino(tipo: str, limit: int = 2000) -> np.ndarray:
     conn = _pool.getconn()
     try:
@@ -60,6 +64,7 @@ def _carregar_amostras_treino(tipo: str, limit: int = 2000) -> np.ndarray:
     cos_h = np.cos(2 * np.pi * sim_h / 24.0)
     return np.column_stack([vals, sin_h, cos_h])
 
+# Treina um modelo por tipo, mas so se houver amostras suficientes.
 def _treinar_modelos():
     for tipo in TIPOS_SUPORTADOS:
         try:
@@ -74,13 +79,14 @@ def _treinar_modelos():
         except Exception as e:
             print(f"[ML] Erro a treinar {tipo}: {e}", flush=True)
 
+# Ciclo que retreina os modelos periodicamente em segundo plano.
 def _loop_retreino():
     time.sleep(30)
     while True:
         _treinar_modelos()
         time.sleep(RETRAIN_INTERVAL)
 
-# ── Risk thresholds ────────────────────────────────────────────────────────────
+# Limiares de risco por tipo. baixo/medio/alto definem os escaloes de risco.
 LIMITES_MIN = {
     "TEMP": -50.0, "HUM": 0.0, "CO2": 0.0, "RUIDO": 0.0,
     "LUMIN": 0.0,  "PART": 0.0, "NO2": 0.0, "O3": 0.0, "WIND": 0.0,
@@ -101,6 +107,7 @@ RISCO_THRESHOLDS = {
 
 class AnaliseServicer(analysis_pb2_grpc.AnaliseServiceServicer):
 
+    # Carrega as leituras da base de dados conforme os filtros (zona, tipo, sensor, datas).
     def _carregar_dados(self, zona, tipo_dado, sensor_id, data_inicio, data_fim):
         query = "SELECT valor, timestamp, is_alarm FROM leituras WHERE 1=1"
         params = []
@@ -122,9 +129,11 @@ class AnaliseServicer(analysis_pb2_grpc.AnaliseServiceServicer):
         df = df.dropna(subset=["Valor"])
         return df.sort_values("Timestamp").reset_index(drop=True)
 
-    # ── ScoreBatch ─────────────────────────────────────────────────────────────
+    # Pontua um lote de leituras com o modelo de cada tipo. Devolve, por leitura, um score
+    # de anomalia entre 0 e 1 e se e ou nao anomalia. modelo_aquecido indica se ja havia
+    # pelo menos um modelo treinado.
     def ScoreBatch(self, request, context):
-        por_tipo = defaultdict(list)  # tipo -> [(index, valor, timestamp)]
+        por_tipo = defaultdict(list)  # tipo -> [(indice, valor, timestamp)]
         for i, l in enumerate(request.leituras):
             por_tipo[l.tipo.upper()].append((i, l.valor, l.timestamp))
 
@@ -163,8 +172,8 @@ class AnaliseServicer(analysis_pb2_grpc.AnaliseServiceServicer):
             for j in range(len(items)):
                 idx      = items[j][0]
                 decision = decisions[j]
-                # decision ~ [-0.15, +0.15]: 0.0 = exact boundary
-                # map so 0.0 -> 0.5, -0.15 -> 0.95, +0.15 -> 0.05
+                # decision fica perto de [-0.15, +0.15]: 0.0 e a fronteira.
+                # Mapeia para score: 0.0 -> 0.5, -0.15 -> 0.95, +0.15 -> 0.05.
                 score       = float(np.clip(0.5 - (decision * 3.0), 0.0, 1.0))
                 is_anomalia = bool(decision < 0)
                 leitura     = request.leituras[idx]
@@ -189,7 +198,7 @@ class AnaliseServicer(analysis_pb2_grpc.AnaliseServiceServicer):
             modelo_aquecido=algum_modelo
         )
 
-    # ── AnalisarZona ───────────────────────────────────────────────────────────
+    # Estatisticas descritivas de uma zona/tipo: media, desvio, minimo, maximo e contagens.
     def AnalisarZona(self, request, context):
         df = self._carregar_dados(
             request.zona, request.tipo_dado, request.sensor_id,
@@ -212,7 +221,9 @@ class AnaliseServicer(analysis_pb2_grpc.AnaliseServiceServicer):
             timestamp      = datetime.now().isoformat()
         )
 
-    # ── DetectarPadroes ────────────────────────────────────────────────────────
+
+    # Deteta padroes: pico e minimo diarios, taxa de alarmes, tendencia (ajuste linear)
+    # e taxa de anomalias do ML.
     def DetectarPadroes(self, request, context):
         df = self._carregar_dados(
             request.zona, request.tipo_dado, request.sensor_id,
@@ -268,7 +279,6 @@ class AnaliseServicer(analysis_pb2_grpc.AnaliseServiceServicer):
                     hora_pico=""
                 ))
 
-        # ML anomaly rate from stored scores
         conn = _pool.getconn()
         try:
             zona_filter   = f"AND zona = %s"     if request.zona     else ""
@@ -296,7 +306,8 @@ class AnaliseServicer(analysis_pb2_grpc.AnaliseServiceServicer):
             padroes=padroes, timestamp=datetime.now().isoformat()
         )
 
-    # ── PreviRisco ─────────────────────────────────────────────────────────────
+    # Preve valores de curto prazo (ajuste linear misturado com a media recente) e calcula
+    # um indice de risco para a saude, com uma recomendacao textual.
     def PreviRisco(self, request, context):
         df = self._carregar_dados(request.zona, request.tipo_dado, request.sensor_id, "", "")
 
@@ -347,8 +358,10 @@ class AnaliseServicer(analysis_pb2_grpc.AnaliseServiceServicer):
         )
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
+# Funcoes auxiliares
 
+# Calcula o indice de risco (0 a 1) a partir da media prevista, do desvio e da taxa de
+# alarmes, usando os limiares por tipo.
 def _calcular_risco(tipo: str, media: float, desvio: float, taxa_alarmes: float) -> float:
     thresh = RISCO_THRESHOLDS.get(tipo)
     if thresh is None:
@@ -359,7 +372,7 @@ def _calcular_risco(tipo: str, media: float, desvio: float, taxa_alarmes: float)
         elif media >= thresh["medio"]: risco_valor = 0.6
         elif media >= thresh["baixo"]: risco_valor = 0.3
         else:                          risco_valor = 0.0
-    else:  # HUM, LUMIN — invertido
+    else:  # HUM e LUMIN: invertido (valores baixos sao piores)
         if   media <= thresh["alto"]:  risco_valor = 1.0
         elif media <= thresh["medio"]: risco_valor = 0.6
         elif media <= thresh["baixo"]: risco_valor = 0.3
@@ -370,6 +383,7 @@ def _calcular_risco(tipo: str, media: float, desvio: float, taxa_alarmes: float)
                + min(0.2, taxa_alarmes))
 
 
+# Gera a recomendacao textual conforme o escalao de risco e a tendencia.
 def _gerar_recomendacao(tipo: str, risco: float, media: float, tendencia: float) -> str:
     labels = {
         "TEMP":  ("temperatura",          "°C"),
@@ -394,8 +408,9 @@ def _gerar_recomendacao(tipo: str, risco: float, media: float, tendencia: float)
     return base
 
 
-# ── Entry point ────────────────────────────────────────────────────────────────
 
+# Arranca o servico: liga a base de dados, treina os modelos, lanca o retreino periodico
+# e fica a servir pedidos gRPC na porta definida.
 def serve():
     global _pool
     _pool = pg_pool.ThreadedConnectionPool(minconn=2, maxconn=8, dsn=DATABASE_URL)

@@ -4,8 +4,6 @@ option csharp_namespace = "ServicoAnalise";
 
 package analysis;
 
-// Invocado pelo Servidor para análise estatística e deteção de padrões.
-// O serviço corre em Python com pandas/numpy/scipy.
 service AnaliseService {
   rpc AnalisarZona     (PedidoAnalise)    returns (ResultadoAnalise);
   rpc DetectarPadroes  (PedidoAnalise)    returns (ResultadoPadroes);
@@ -13,7 +11,7 @@ service AnaliseService {
   rpc ScoreBatch       (PedidoScoreBatch) returns (ResultadoScoreBatch);
 }
 
-// --- Pedidos ---
+// pedidos
 
 message PedidoAnalise {
   string zona        = 1;
@@ -29,7 +27,7 @@ message PedidoPrevisao {
   int32  horas_futuras = 3;
 }
 
-// --- Resultados ---
+// -resultados
 
 message ResultadoAnalise {
   string zona           = 1;
@@ -65,7 +63,7 @@ message ResultadoPrevisao {
   string          timestamp         = 6;
 }
 
-// --- ML anomaly scoring ---
+//ML anomaly scoring
 
 message PedidoScoreBatch {
   string              gateway_id = 1;

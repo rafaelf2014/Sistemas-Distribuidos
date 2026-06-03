@@ -13,10 +13,9 @@ const UNIDADES: Record<string, string> = {
   NO2: "µg/m³", O3: "ppb", WIND: "km/h",
 };
 
-// ── Risk thresholds ───────────────────────────────────────────────────────────
-// Weights sum to 1.0 across individual tiers; combos add bonus on top (capped at 1).
-// Thresholds use the MAX reading per type (not average) so acute spikes
-// like fire or smog are detected immediately instead of being diluted.
+// Limiares de risco. Os pesos somam 1.0 entre os fatores individuais; as combinacoes
+// somam um bonus por cima (limitado a 1). Usa-se o valor MAXIMO por tipo (e nao a media)
+// para que picos agudos (incendio, smog) sejam detetados logo, sem serem diluidos.
 const RISK_TIERS: Array<{
   tipo: string; label: string; unit: string;
   warn: number; danger: number; weight: number; invert?: boolean;
@@ -61,8 +60,8 @@ function calcularRisco(dados: Leitura[]): { score: number; fatores: RiscoFator[]
     grupos.get(d.tipoDado)!.push(v);
   }
 
-  // Use max per type so acute spikes (fire, smog) are reflected immediately
-  // instead of being washed out by pre-event normal readings.
+  // Usa o maximo por tipo para que picos agudos (incendio, smog) apareçam de imediato,
+  // em vez de serem diluidos pelas leituras normais anteriores ao evento.
   const medias: Record<string, number> = {};
   for (const [t, vs] of grupos)
     medias[t] = Math.max(...vs);
@@ -110,9 +109,9 @@ function riskLabel(score: number) {
   return "NORMAL";
 }
 
-// ── Chart helpers ─────────────────────────────────────────────────────────────
+// Funcoes auxiliares dos graficos
 
-function fmtIso(d: Date) { return d.toISOString().slice(0, 20); } // keep trailing Z → unambiguous UTC
+function fmtIso(d: Date) { return d.toISOString().slice(0, 20); } // manter o Z final para UTC inequivoco
 
 function agruparPorBucket(
   anomalias: Anomalia[], horas: number, agoraMs: number,
@@ -142,7 +141,7 @@ function agruparPorBucket(
     }));
 }
 
-// ── Component ─────────────────────────────────────────────────────────────────
+// Componente
 
 export default function AnaliseView() {
   const [zona,      setZona]      = useState("");
@@ -158,7 +157,7 @@ export default function AnaliseView() {
   const [riskLoading, setRiskLoading] = useState(false);
   const [erro,        setErro]        = useState("");
 
-  // Load zones and auto-select first
+  // Carrega as zonas e seleciona a primeira automaticamente
   useEffect(() => {
     api.sensores().then(ss => {
       const zs = [...new Set(ss.map(s => s.zona))];
@@ -167,7 +166,7 @@ export default function AnaliseView() {
     }).catch(() => {});
   }, []);
 
-  // Stats + anomaly chart — affected by zona, tipo, horas
+  // Estatisticas e grafico de anomalias: dependem de zona, tipo e horas
   useEffect(() => {
     if (!zona) return;
     let stale = false;
@@ -194,7 +193,7 @@ export default function AnaliseView() {
     return () => { stale = true; };
   }, [zona, tipo, horas]);
 
-  // Risk analysis — only affected by zona, polls every 10 s for live updates
+  // Analise de risco: depende so da zona e atualiza a cada 10s para dados em tempo real
   useEffect(() => {
     if (!zona) return;
     let canceled = false;
@@ -211,7 +210,7 @@ export default function AnaliseView() {
     return () => { canceled = true; clearInterval(id); };
   }, [zona]);
 
-  // ── Stats ──────────────────────────────────────────────────────────────────
+  // Estatisticas
   const valores = dados.map(d => parseFloat(d.valor)).filter(v => !isNaN(v));
   const total   = valores.length;
   const media   = total > 0 ? valores.reduce((a, b) => a + b, 0) / total : null;
@@ -220,16 +219,15 @@ export default function AnaliseView() {
   const desvio  = total > 0 && media !== null
     ? Math.sqrt(valores.reduce((acc, v) => acc + (v - media) ** 2, 0) / total)
     : null;
-  const alarmes = dados.filter(d => d.isAlarm).length;
   const un      = UNIDADES[tipo] ?? "";
 
-  // ── Risk ───────────────────────────────────────────────────────────────────
+  // Risco
   const risco = calcularRisco(riskDados);
   const scoreColor = riskColor(risco.score);
   const scoreLabel = riskLabel(risco.score);
   const scorePct   = Math.round(risco.score * 100);
 
-  // ── Anomaly chart ──────────────────────────────────────────────────────────
+  // Grafico de anomalias
   const agoraMs   = Date.now();
   const chartData = agruparPorBucket(anomalias, horas, agoraMs);
   const maxCount  = Math.max(...chartData.map(b => b.count), 1);
@@ -237,7 +235,7 @@ export default function AnaliseView() {
   return (
     <div className="an-wrap">
 
-      {/* ── Filters ───────────────────────────────────────────────────────── */}
+      {/* Filtros */}
       <div className="filters-bar">
         <select value={zona} onChange={e => setZona(e.target.value)}>
           {zonas.map(z => <option key={z} value={z}>{z}</option>)}
@@ -255,10 +253,10 @@ export default function AnaliseView() {
 
       {erro && <p className="erro">{erro}</p>}
 
-      {/* ── Stats + Risk ──────────────────────────────────────────────────── */}
+      {/* Estatisticas e risco */}
       <div className="an-row">
 
-        {/* Left — Stats */}
+        {/* Esquerda: estatisticas */}
         <div className="card an-card an-stats-card">
           <div className="an-card-title">Estatísticas — {tipo} ({un})</div>
           {total === 0
@@ -289,18 +287,11 @@ export default function AnaliseView() {
                   <span className="stat-cell-label">Amplitude</span>
                   <span className="stat-cell-value">{(maximo! - minimo!).toFixed(2)}{un}</span>
                 </div>
-                <div className="stat-cell">
-                  <span className="stat-cell-label">Alarmes</span>
-                  <span className="stat-cell-value"
-                    style={{ color: alarmes > 0 ? "var(--danger)" : "var(--success)" }}>
-                    {alarmes}
-                  </span>
-                </div>
               </div>
             )}
         </div>
 
-        {/* Right — Risk */}
+        {/* Direita: risco */}
         <div className="card an-card an-risk-card">
           <div className="an-card-title">
             Risco de Saúde
@@ -360,7 +351,7 @@ export default function AnaliseView() {
 
       </div>
 
-      {/* ── Anomaly bar chart ────────────────────────────────────────────── */}
+      {/* Grafico de barras das anomalias */}
       <div className="card an-card an-chart-card">
         <div className="an-card-title">
           Anomalias críticas (score ≥ 80%) — últimas {horas}h

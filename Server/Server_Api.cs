@@ -13,11 +13,11 @@ using Npgsql;
 using Microsoft.IdentityModel.Tokens;
 using System.IdentityModel.Tokens.Jwt;
 
-// ==========================================
-// REST API (porta 8080) + cliente gRPC para ServicoAnalise
-// ==========================================
+// API REST na porta 8080 e cliente gRPC para o ServicoAnalise.
+// O frontend consulta esta API; e aqui que o servidor pede a analise estatistica.
 partial class ServerCentral
 {
+    // Cliente gRPC para a analise estatistica, padroes e previsao.
     private readonly string _analiseUrl = Environment.GetEnvironmentVariable("ANALISE_URL") ?? "http://localhost:50052";
     private AnaliseService.AnaliseServiceClient? _analiseClient;
 
@@ -27,6 +27,7 @@ partial class ServerCentral
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     };
 
+    // Segredo de assinatura dos tokens e credenciais de acesso (com valores por omissao).
     private readonly string _jwtSecret =
         Environment.GetEnvironmentVariable("JWT_SECRET") ?? "one-health-dev-secret-change-in-prod";
 
@@ -36,6 +37,7 @@ partial class ServerCentral
          Environment.GetEnvironmentVariable("API_PASSWORD") ?? "admin"
     };
 
+    // Abre o canal gRPC para a analise e arranca o servidor HTTP numa thread propria.
     void IniciarApi()
     {
         try
@@ -52,6 +54,7 @@ partial class ServerCentral
         new Thread(ListenerApi) { IsBackground = true, Name = "REST-API" }.Start();
     }
 
+    // Ciclo que aceita pedidos HTTP e despacha cada um para uma tarefa.
     void ListenerApi()
     {
         var listener = new HttpListener();
@@ -80,6 +83,8 @@ partial class ServerCentral
         listener.Stop();
     }
 
+    // Trata um pedido HTTP: trata CORS, valida o token (exceto no login) e encaminha
+    // para o handler conforme o caminho.
     async Task HandleRequestAsync(HttpListenerContext ctx)
     {
         var req = ctx.Request;
@@ -169,7 +174,7 @@ partial class ServerCentral
         finally { res.Close(); }
     }
 
-    // GET /api/sensores — sensors from the sensores table + alarm count from leituras
+    // GET /api/sensores: lista os sensores com o respetivo numero total de alarmes.
     async Task<string> HandleSensores()
     {
         var lista = new List<object>();
@@ -322,7 +327,7 @@ partial class ServerCentral
         return JsonSerializer.Serialize(rows, _jsonOpts);
     }
 
-    // GET /api/ml/status — returns whether the Isolation Forest is warm (has scored any reading recently)
+    // GET /api/ml/status: indica se o modelo ja esta aquecido (pontuou leituras ha pouco).
     async Task<string> HandleMlStatus()
     {
         try
@@ -448,7 +453,7 @@ partial class ServerCentral
         }
     }
 
-    // POST /api/stream/start  body: { "sensor": "<id>" }
+    // POST /api/stream/start: inicia o stream de video de um sensor (corpo: { "sensor": "<id>" }).
     async Task<string> HandleStreamStart(HttpListenerRequest req)
     {
         string sensorId;
@@ -469,7 +474,7 @@ partial class ServerCentral
         if (!_sensoresStream.TryGetValue(sensorId, out var info))
             return JsonSerializer.Serialize(new { erro = $"Sensor {sensorId} não registado como video-capable." }, _jsonOpts);
 
-        if (!_gatewayIps.TryGetValue(info.GatewayId, out string gwIp))
+        if (!_gatewayIps.TryGetValue(info.GatewayId, out string gwIp)) //Javascript a ser JavaScript
             return JsonSerializer.Serialize(new { erro = $"IP do gateway {info.GatewayId} desconhecido." }, _jsonOpts);
 
         await IniciarStream(sensorId);
@@ -507,6 +512,7 @@ partial class ServerCentral
         }
     }
 
+    // Gera um token JWT assinado, valido por 24 horas, para o utilizador autenticado.
     string GerarToken(string username)
     {
         var key   = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwtSecret));
@@ -521,6 +527,7 @@ partial class ServerCentral
         return new JwtSecurityTokenHandler().WriteToken(token);
     }
 
+    // Valida o token JWT do cabecalho Authorization (assinatura, emissor, audiencia e validade).
     bool ValidarToken(HttpListenerRequest req)
     {
         string? auth = req.Headers["Authorization"];
@@ -548,7 +555,7 @@ partial class ServerCentral
         catch { return false; }
     }
 
-    // GET /api/stream/estado — debug: what does the server know about streams?
+    // GET /api/stream/estado: estado interno dos streams (para diagnostico).
     string HandleStreamEstado()
     {
         return JsonSerializer.Serialize(new

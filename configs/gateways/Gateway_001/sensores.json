@@ -5,7 +5,7 @@
     "zona": "CHAVES_NORTE",
     "tipos": "[TEMP,HUM,CO2]",
     "videoStream": true,
-    "lastSync": "2026-06-02T18:48:13"
+    "lastSync": "2026-06-03T09:41:46"
   },
   {
     "id": "S002",
@@ -13,7 +13,7 @@
     "zona": "CHAVES_NORTE",
     "tipos": "[TEMP,HUM,CO2]",
     "videoStream": false,
-    "lastSync": "2026-06-02T18:48:13"
+    "lastSync": "2026-06-03T09:41:46"
   },
   {
     "id": "S003",
@@ -21,7 +21,7 @@
     "zona": "CHAVES_NORTE",
     "tipos": "[RUIDO,LUMIN,PART]",
     "videoStream": false,
-    "lastSync": "2026-06-02T18:48:13"
+    "lastSync": "2026-06-03T09:41:46"
   },
   {
     "id": "S004",
@@ -29,7 +29,7 @@
     "zona": "CHAVES_NORTE",
     "tipos": "[NO2,O3,WIND]",
     "videoStream": false,
-    "lastSync": "2026-06-02T18:48:13"
+    "lastSync": "2026-06-03T09:41:46"
   },
   {
     "id": "S005",
@@ -37,7 +37,7 @@
     "zona": "CHAVES_SUL",
     "tipos": "[TEMP,HUM,CO2]",
     "videoStream": false,
-    "lastSync": "2026-06-02T18:48:13"
+    "lastSync": "2026-06-03T09:41:46"
   },
   {
     "id": "S006",
@@ -45,7 +45,7 @@
     "zona": "CHAVES_SUL",
     "tipos": "[RUIDO,LUMIN,PART]",
     "videoStream": false,
-    "lastSync": "2026-06-02T18:48:13"
+    "lastSync": "2026-06-03T09:41:46"
   },
   {
     "id": "S007",
@@ -53,7 +53,7 @@
     "zona": "CHAVES_SUL",
     "tipos": "[NO2,O3,WIND]",
     "videoStream": false,
-    "lastSync": "2026-06-02T18:48:13"
+    "lastSync": "2026-06-03T09:41:46"
   },
   {
     "id": "S008",
@@ -61,7 +61,7 @@
     "zona": "CHAVES_CENTRO",
     "tipos": "[TEMP,HUM,CO2]",
     "videoStream": false,
-    "lastSync": "2026-06-02T18:48:13"
+    "lastSync": "2026-06-03T09:41:47"
   },
   {
     "id": "S009",
@@ -69,7 +69,7 @@
     "zona": "CHAVES_CENTRO",
     "tipos": "[RUIDO,LUMIN,PART]",
     "videoStream": false,
-    "lastSync": "2026-06-02T18:48:13"
+    "lastSync": "2026-06-03T09:41:46"
   },
   {
     "id": "S010",
@@ -77,6 +77,6 @@
     "zona": "CHAVES_CENTRO",
     "tipos": "[NO2,O3,WIND]",
     "videoStream": false,
-    "lastSync": "2026-06-02T18:48:13"
+    "lastSync": "2026-06-03T09:41:46"
   }
 ]

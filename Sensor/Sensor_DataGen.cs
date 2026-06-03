@@ -9,22 +9,23 @@ namespace sensor
 {
     partial class Sensor
     {
-        #region GERAÇÃO DE DADOS
+        #region GERACAO DE DADOS
 
-        // Random.Shared is thread-safe (.NET 6+); safe for concurrent timer threads
-        // Ornstein-Uhlenbeck drift state per tipo — ConcurrentDictionary avoids init race
+        // Estado de deriva (Ornstein-Uhlenbeck) por tipo de dado. ConcurrentDictionary
+        // porque varios temporizadores podem gerar dados em paralelo.
         private readonly ConcurrentDictionary<string, double> _drift = new();
 
-        // ── Zone profiles ─────────────────────────────────────────────
         private enum ZoneTipo { Residencial, Comercial, Industrial, Parque, Trafego }
 
+        // Valores base de cada variavel para um tipo de zona.
         private record ZoneProfile(
             double BaseTEMP,  double BaseHUM,   double BaseCO2,
             double BaseRUIDO, double BaseLUMIN, double BasePART,
             double BaseNO2,   double BaseO3,    double BaseWIND
         );
 
-        // Baseline values per zone type for all 9 sensor types
+        // Perfil base por tipo de zona para os 9 tipos de sensor. Este feature ficou imcompleta WIP,
+        // mas a ideia era que o tipo de zona afetasse os valores base e os ciclos diurnos, para criar mais diversidade entre sensores.
         private readonly Dictionary<ZoneTipo, ZoneProfile> _profiles = new()
         {
             // TEMP   HUM   CO2   RUIDO  LUMIN   PART  NO2   O3   WIND
@@ -35,6 +36,7 @@ namespace sensor
             [ZoneTipo.Trafego]     = new(19,  50,  720,  72, 28000, 35, 110,  30,  9),
         };
 
+        // Converte o tipo de zona da configuracao no enum interno. Same do que em cima, WIP.
         private ZoneTipo ObterZonaTipo() => (_zonaType ?? "residencial").ToLowerInvariant() switch
         {
             "comercial"  => ZoneTipo.Comercial,
@@ -44,7 +46,7 @@ namespace sensor
             _            => ZoneTipo.Residencial,
         };
 
-        // Box-Muller Gaussian noise
+        // Noise gaussiano pelo metodo Box-Muller.
         private static double Gauss()
         {
             double u1 = Math.Max(1e-10, Random.Shared.NextDouble());
@@ -52,9 +54,9 @@ namespace sensor
             return Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Cos(2.0 * Math.PI * u2);
         }
 
-        // ── Multi-layer baseline ───────────────────────────────────────
-        // Layers: 24h circadian + 4h occupancy cycle + 0.5h micro-variation
-        //       + Ornstein-Uhlenbeck drift + Gaussian noise
+        // Gera o valor base de uma variavel combinando varias camadas: ciclo de 24h,
+        // ciclo de 4h, microvariacao de meia hora, deriva e noise gaussiano.
+        // O dia simulado dura 7200 segundos reais (2 horas).
         private double GerarBaseline(string tipo)
         {
             var    p    = _profiles[ObterZonaTipo()];
@@ -64,6 +66,7 @@ namespace sensor
             double sin4  = Math.Sin(2 * Math.PI /  4.0 * h);
             double sin05 = Math.Sin(2 * Math.PI /  0.5 * h);
 
+            // Atualiza a deriva: media movel suave mais um passo aleatorio.
             double prev = _drift.GetOrAdd(tipo, 0.0);
             _drift[tipo] = prev * 0.92 + (Random.Shared.NextDouble() * 2 - 1);
 
@@ -87,7 +90,7 @@ namespace sensor
             return v;
         }
 
-        // ── Correlated events ──────────────────────────────────────────
+        // Eventos correlacionados que afetam varias variaveis ao mesmo tempo.
         internal enum TipoEvento { incendio, multidao, tempestade, transito, smog, construcao, chuva }
 
         private class Evento
@@ -101,7 +104,7 @@ namespace sensor
         private readonly List<Evento> _eventosAtivos = new();
         private readonly object       _eventosLock   = new();
 
-        // Per-event deltas on top of baseline (positive = increase, negative = decrease)
+        // Variacao que cada evento aplica a cada variavel (positiva sobe, negativa desce).
         private readonly Dictionary<TipoEvento, Dictionary<string, double>> _eventImpact = new()
         {
             [TipoEvento.incendio]   = new() { ["TEMP"]=22,  ["CO2"]=900, ["PART"]=200, ["NO2"]=55,  ["O3"]=35, ["RUIDO"]=8               },
@@ -113,6 +116,8 @@ namespace sensor
             [TipoEvento.chuva]      = new() { ["HUM"]=24,   ["PART"]=-9, ["LUMIN"]=-9000, ["TEMP"]=-2, ["WIND"]=7, ["O3"]=-4             },
         };
 
+        // Soma o impacto de todos os eventos ativos sobre uma variavel.
+        // O impacto segue um envelope sinusoidal: sobe ate ao pico e volta a zero.
         private double CalcularImpactoEventos(string tipo)
         {
             double total = 0;
@@ -121,7 +126,6 @@ namespace sensor
                 foreach (var ev in _eventosAtivos)
                 {
                     if (!_eventImpact[ev.Tipo].TryGetValue(tipo, out double impact)) continue;
-                    // Smooth half-sine envelope: rises to peak then returns to zero
                     double envelope = ev.Intensidade * Math.Sin(Math.PI * ev.Passo / ev.TotalPassos);
                     total += impact * envelope;
                 }
@@ -129,9 +133,10 @@ namespace sensor
             return total;
         }
 
-        // Time-gated tick: CAS ensures exactly one thread wins per second
         private long _ultimoTickEventoTicks = 0;
 
+        // Avanca os eventos um passo por segundo. Usa CompareExchange para garantir que
+        // so uma thread o faz por segundo. Tem 2% de hipotese de criar um evento novo.
         private void TickEventos()
         {
             long now    = DateTime.Now.Ticks;
@@ -144,6 +149,7 @@ namespace sensor
 
             lock (_eventosLock)
             {
+                // Avanca cada evento e remove os que ja terminaram.
                 for (int i = _eventosAtivos.Count - 1; i >= 0; i--)
                 {
                     _eventosAtivos[i].Passo++;
@@ -151,7 +157,6 @@ namespace sensor
                         _eventosAtivos.RemoveAt(i);
                 }
 
-                // 2% auto-trigger chance per second
                 if (Random.Shared.Next(100) < 2)
                 {
                     var valores = Enum.GetValues<TipoEvento>();
@@ -160,11 +165,12 @@ namespace sensor
                 }
             }
 
-            // IniciarEvento called outside _eventosLock to avoid lock-order inversion
+            // IniciarEvento e chamado fora do lock para evitar inversao de ordem de locks.
             if (autoEvento.HasValue)
                 IniciarEvento(autoEvento.Value, autoIntensidade);
         }
 
+        // Cria um novo evento ativo com duracao e intensidade dadas. Tambem usado pela consola.
         internal void IniciarEvento(TipoEvento tipo, double intensidade = 1.0)
         {
             int passos;
@@ -182,12 +188,14 @@ namespace sensor
             RegistarLog($"[EVENTO] {tipo} iniciado — duração ~{passos}t, intensidade {intensidade:F1}x");
         }
 
+        // Cancela todos os eventos ativos.
         internal void LimparEventos()
         {
             lock (_eventosLock) { _eventosAtivos.Clear(); }
             RegistarLog("[EVENTO] Todos os eventos cancelados.");
         }
 
+        // Devolve uma descricao dos eventos ativos para a consola de depuracao.
         internal string StatusEventos()
         {
             lock (_eventosLock)
@@ -198,9 +206,9 @@ namespace sensor
             }
         }
 
-        // ── Unit conversion (standard → declared unit) ──────────────────
-        // Inverse of PreProcessamento.Converter: the sensor simulates a device that
-        // natively reports in a non-standard unit, so PreProcessamento can convert it back.
+        // Converte um valor da unidade padrao para a unidade declarada na config.
+        // E o inverso da conversao do PreProcessamento: simula um sensor que reporta
+        // numa unidade nao padrao, para o servico de normalizacao a converter de volta.
         private static double ConverterParaUnidade(double valor, string tipo, string unidade) =>
             (tipo, unidade) switch
             {
@@ -211,9 +219,9 @@ namespace sensor
                 _                  => valor
             };
 
-        // ── Wire-format encoder ─────────────────────────────────────────
-        // Builds the payload in the format selected by config (_formato).
-        // pipe → handled directly by the Gateway; the other 4 go through PreProcessamento.
+        // Constroi a mensagem no formato escolhido na configuracao.
+        // O formato pipe e tratado diretamente pelo gateway; os outros quatro passam
+        // pelo PreProcessamento para detecao de formato.
         private string FormatarLeitura(string tipo, double valor, string unidade, DateTime ts)
         {
             string val   = valor.ToString(CultureInfo.InvariantCulture);
@@ -241,9 +249,8 @@ namespace sensor
             }
         }
 
-        // Hex frame: IITTPPPP TTTTTTTT
-        //   II = sensor id byte, TT = tipo byte, PPPP = signed int16 (value × 10),
-        //   TTTTTTTT = unix epoch seconds. No unit field — value stays standard.
+        // Codifica a leitura em hexadecimal: byte do id, byte do tipo, valor em int16
+        // (valor vezes 10) e o tempo unix. Este formato nao transporta unidade.
         private string FormatarHex(string tipo, double valor, DateTime ts)
         {
             byte idByte = byte.TryParse(_idSensor.TrimStart('S', 's'), out var b) ? b : (byte)0;
@@ -258,6 +265,7 @@ namespace sensor
             return $"{idByte:X2}{tipoByte:X2}{(ushort)sval:X4}{epoch:X8}";
         }
 
+        // Gera uma leitura, aplica eventos e conversao de unidade, formata e publica.
         async Task GerarEEnviarDado(SensorConfig cfg)
         {
             if (!_isOnline) return;
@@ -269,10 +277,11 @@ namespace sensor
 
             DateTime ts = DateTime.UtcNow;
 
-            // Hex carries no unit, so the value must stay in standard units.
+            // O formato hex nao transporta unidade, por isso o valor fica em unidade padrao.
             string unidade = _formato == "hex" ? "" : cfg.Unidade;
             double vOut    = ConverterParaUnidade(v, tipo, unidade);
 
+            // Marca a leitura se houver um evento ativo a afetar este tipo.
             string evTag = "";
             lock (_eventosLock)
             {

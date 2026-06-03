@@ -52,7 +52,7 @@ export default function AnomaliasMl() {
     return () => clearInterval(id);
   }, []);
 
-  // Always fetch the full 500 — pagination is done client-side
+  // Vai sempre buscar as 500; a paginacao e feita no cliente
   useEffect(() => {
     if (!ready) return;
     const carregar = () =>
@@ -64,7 +64,7 @@ export default function AnomaliasMl() {
     return () => clearInterval(id);
   }, [ready, zona, tipo, minScore]);
 
-  // Reset to page 1 whenever filters or page size change
+  // Volta a pagina 1 sempre que mudam os filtros ou o tamanho de pagina
   useEffect(() => { setPage(1); }, [zona, tipo, minScore, perPage]);
 
   function toggleSort(col: SortCol) {

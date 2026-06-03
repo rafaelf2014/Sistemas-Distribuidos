@@ -13,20 +13,24 @@ partial class ServerCentral
 {
     #region CAMPOS
 
+    // Ligacao a base de dados (pode vir de variavel de ambiente).
     private readonly string connectionString =
         Environment.GetEnvironmentVariable("DATABASE_URL")
         ?? "Host=localhost;Database=one_health;Username=postgres;Password=postgres";
 
     TcpListener? _server = null;
 
+    // Sensores com capacidade de video, para coordenar pedidos de stream.
     private readonly ConcurrentDictionary<string, (string GatewayId, string Zona, string Tipos)> _sensoresStream = new();
 
     #endregion
 
-    #region INICIALIZAÇÃO
+    #region INICIALIZACAO
 
     public static async Task Main() => await new ServerCentral().RunAsync();
 
+    // Arranque: prepara a base de dados, arranca a API REST e fica a aceitar ligacoes
+    // TCP dos gateways na porta 14000.
     public async Task RunAsync()
     {
         Console.CancelKeyPress += TratarEncerramento;
@@ -56,6 +60,8 @@ partial class ServerCentral
 
     #region HANDLER DE GATEWAYS
 
+    // Trata uma ligacao de um gateway: le linhas JSON e despacha cada mensagem para o
+    // handler conforme o campo tipo, respondendo a cada uma com um ACK.
     async Task HandleGatewayAsync(TcpClient gatewayClient)
     {
         string endpoint  = gatewayClient.Client.RemoteEndPoint?.ToString() ?? "?";
@@ -106,6 +112,8 @@ partial class ServerCentral
         finally { gatewayClient.Close(); }
     }
 
+    // Insere um lote de leituras na base de dados (uma so operacao em batch) e atualiza
+    // o ultima_sync de cada sensor envolvido.
     async Task<string> HandleDataBatch(JsonElement root, string gatewayId)
     {
         if (!root.TryGetProperty("leituras", out var leituras) || leituras.ValueKind != JsonValueKind.Array)
@@ -159,7 +167,7 @@ partial class ServerCentral
             if (count > 0)
             {
                 await batch.ExecuteNonQueryAsync();
-                // Refresh ultima_sync so the heartbeat checker knows the sensor is still alive
+                // Atualiza ultima_sync para o verificador de heartbeat saber que o sensor esta vivo.
                 await using var syncCmd = conn.CreateCommand();
                 syncCmd.CommandText = "UPDATE sensores SET ultima_sync = NOW() WHERE sensor_id = ANY($1)";
                 syncCmd.Parameters.Add(new NpgsqlParameter { Value = sensorIdsNoBatch.ToArray() });
@@ -175,6 +183,7 @@ partial class ServerCentral
         return $"{{\"tipo\":\"ACK_BATCH\",\"status\":\"OK\",\"count\":{count}}}";
     }
 
+    // Grava um alarme reencaminhado por um gateway como uma leitura com is_alarm a true.
     async Task<string> HandleAlarmForward(JsonElement root, string gatewayId)
     {
         string sensorId = root.TryGetProperty("sensorId",  out var s)  ? s.GetString()  ?? "" : "";
@@ -213,6 +222,8 @@ partial class ServerCentral
         return "{\"tipo\":\"ACK_ALARM\",\"status\":\"OK\"}";
     }
 
+    // Regista ou atualiza um sensor na base de dados (UPSERT) e guarda a porta de comando
+    // do gateway, usada depois para pedir streams de video.
     async Task<string> HandleSensorReg(JsonElement root, string gatewayId)
     {
         string sensorId    = root.TryGetProperty("sensorId",    out var s)  ? s.GetString()  ?? "" : "";
@@ -257,6 +268,7 @@ partial class ServerCentral
         return "{\"tipo\":\"ACK_SENSOR_REG\",\"status\":\"OK\"}";
     }
 
+    // Atualiza o estado de um sensor (ativo, manutencao, desativado).
     async Task<string> HandleSensorStatus(JsonElement root)
     {
         string sensorId = root.TryGetProperty("sensorId", out var s)  ? s.GetString() ?? "" : "";
@@ -286,6 +298,7 @@ partial class ServerCentral
 
     #region BASE DE DADOS
 
+    // Cria as tabelas e indices se ainda nao existirem.
     void InicializarBaseDeDados()
     {
         try
@@ -332,6 +345,7 @@ partial class ServerCentral
 
     #region ENCERRAMENTO
 
+    // Trata o Ctrl+C: para o servidor TCP e termina o processo.
     void TratarEncerramento(object? sender, ConsoleCancelEventArgs args)
     {
         args.Cancel = true;

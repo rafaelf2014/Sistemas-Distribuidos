@@ -6,17 +6,20 @@ namespace sensor
 {
     partial class Sensor
     {
+        // Consola de depuracao: permite injetar eventos a mao durante a execucao.
         #region DEBUG MENU
 
+        // Arranca a thread que le os comandos do teclado.
         internal void IniciarMenuDebug()
         {
             var t = new Thread(LoopMenuDebug) { IsBackground = true, Name = "DebugMenu" };
             t.Start();
         }
 
+        // Le tecla a tecla, acumula a linha e executa o comando quando recebe Enter.
         void LoopMenuDebug()
         {
-            Thread.Sleep(600); // let the TUI render first
+            Thread.Sleep(600); // dar tempo a TUI desenhar primeiro
             while (!_encerrando)
             {
                 try
@@ -47,6 +50,7 @@ namespace sensor
             }
         }
 
+        // Interpreta um comando da consola: evento, limpar, status ou help.
         void ProcessarComandoDebug(string input)
         {
             var parts = input.Split(' ', StringSplitOptions.RemoveEmptyEntries);

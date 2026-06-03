@@ -9,8 +9,11 @@ using System.Xml.Linq;
 
 namespace PreProcessamento.Services
 {
+    // Servico gRPC de normalizacao: deteta o formato, converte unidades, valida intervalos
+    // e atribui uma pontuacao de qualidade a cada leitura.
     public class NormalizacaoService : PreProcessamentoService.PreProcessamentoServiceBase
     {
+        // Intervalo plausivel (minimo, maximo) por tipo de dado. Fora disto e invalido.
         private static readonly Dictionary<string, (double Min, double Max)> _intervalos = new()
         {
             ["TEMP"]  = (-50,    80),
@@ -24,6 +27,7 @@ namespace PreProcessamento.Services
             ["WIND"]  = (  0,   200),
         };
 
+        // Unidade canonica de cada tipo, usada na resposta normalizada.
         private static readonly Dictionary<string, string> _unidadesPadrao = new()
         {
             ["TEMP"]  = "C",
@@ -37,6 +41,7 @@ namespace PreProcessamento.Services
             ["WIND"]  = "km/h",
         };
 
+        // Amplitude minima esperada num lote. Abaixo disto, o sensor parece bloqueado.
         private static double GetStuckThreshold(string tipo) => tipo switch
         {
             "TEMP"  => 0.05,
@@ -55,8 +60,8 @@ namespace PreProcessamento.Services
         private record TsFlags(bool Futuro, bool Antigo, bool Desordem);
         private record ResolvedLeitura(LeituraBruta Leitura, bool Valido, string Erro = "");
 
-        // ── Format detection ──────────────────────────────────────────────────────
-
+        // Se a leitura ja vem estruturada (formato pipe), passa direto; se traz uma carga
+        // bruta (json/xml/querystring/hex), tenta detetar o formato e extrair os campos.
         private static ResolvedLeitura ResolverPayload(LeituraBruta l)
         {
             if (string.IsNullOrEmpty(l.PayloadRede))
@@ -79,8 +84,8 @@ namespace PreProcessamento.Services
             }, true);
         }
 
-        // Detects format (JSON / XML / QueryString / Hex) and extracts structured fields.
-        // Pipe format (DATA_SEND|...) is handled by the Gateway before reaching here.
+        // Deteta o formato pelo inicio do texto e extrai os campos. Suporta JSON, XML,
+        // QueryString e Hexadecimal. Devolve false se nao reconhecer o formato.
         private static bool TryParsarFormato(string raw,
             out string sensorId, out string tipo, out double valor,
             out string unidade, out string timestamp)
@@ -143,8 +148,8 @@ namespace PreProcessamento.Services
                 }
 
                 // Hex: IITTPPPP[TTTTTTTT]
-                // II = sensor id (byte), TT = tipo (byte), PPPP = signed value × 0.1,
-                // optional TTTTTTTT = unix epoch seconds
+                // II = id do sensor (byte), TT = tipo (byte), PPPP = valor em int16 (valor vezes 10),
+                // TTTTTTTT (opcional) = tempo unix em segundos.
                 if (t.Length >= 8 && t.All(c => Uri.IsHexDigit(c)))
                 {
                     byte  hexId   = Convert.ToByte(t.Substring(0, 2), 16);
@@ -173,20 +178,22 @@ namespace PreProcessamento.Services
             return false;
         }
 
-        // ── gRPC methods ──────────────────────────────────────────────────────────
 
+        // Normaliza um lote de leituras: resolve o formato, converte unidades, verifica a
+        // ordem temporal e a deteccao de sensor bloqueado, e processa cada leitura.
+        // A resposta mantem a ordem original do pedido.
         public override Task<BlocoLeiturasProcessadas> NormalizarBloco(BlocoLeiturasBrutas request, ServerCallContext context)
         {
-            // Step 0: resolve raw payloads into structured leituras (or error markers)
+            // Passo 1: resolver formatos; ficar so com as leituras validas para conversao.
             var resolvidas   = request.Dados.Select(ResolverPayload).ToList();
             var estruturadas = resolvidas.Where(r => r.Valido).Select(r => r.Leitura).ToList();
 
-            // Pass 1: unit conversion on structured items only
+            // Passo 2: conversao de unidade.
             var provisorios = estruturadas
                 .Select(l => { var v = Converter(l); return (Leitura: l, Valor: v, Convertido: Math.Abs(v - l.Valor) > 0.001); })
                 .ToList();
 
-            // Timestamp ordering + plausibility
+            // Passo 3: marcar timestamps no futuro, atrasados ou fora de ordem.
             DateTime now     = DateTime.UtcNow;
             DateTime? prevTs = null;
             var tsFlags = provisorios.Select(p =>
@@ -199,7 +206,8 @@ namespace PreProcessamento.Services
                 return new TsFlags(futuro, antigo, desordem);
             }).ToList();
 
-            // Stuck-sensor check on in-range structured values
+
+            // Passo 4: detecao de sensor bloqueado, pela amplitude dos valores em intervalo.
             var valoresValidos = provisorios
                 .Where(p => _intervalos.TryGetValue(p.Leitura.Tipo.ToUpper(), out var iv)
                             && p.Valor >= iv.Min && p.Valor <= iv.Max)
@@ -216,7 +224,7 @@ namespace PreProcessamento.Services
                 isSuspeito   = !isBloqueado && range < GetStuckThreshold(tipo);
             }
 
-            // Build response preserving original request order
+            // Passo 5: construir a resposta na mesma ordem do pedido (invalidos incluidos).
             var resposta = new BlocoLeiturasProcessadas();
             int pIdx = 0;
             foreach (var r in resolvidas)
@@ -243,6 +251,7 @@ namespace PreProcessamento.Services
             return Task.FromResult(resposta);
         }
 
+        // Versao para uma unica leitura (sem deteccao de bloqueio nem ordem de lote).
         public override Task<LeituraProcessada> Normalizar(LeituraBruta request, ServerCallContext context)
         {
             var resolved = ResolverPayload(request);
@@ -272,8 +281,8 @@ namespace PreProcessamento.Services
                 new BatchFlags(false, false), tsf));
         }
 
-        // ── Internal helpers ──────────────────────────────────────────────────────
 
+        // Converte o valor para a unidade canonica do tipo (ex: Fahrenheit/Kelvin para Celsius).
         private static double Converter(LeituraBruta request)
         {
             double valor   = request.Valor;
@@ -294,6 +303,8 @@ namespace PreProcessamento.Services
             return valor;
         }
 
+        // Valida o intervalo e calcula a pontuacao de qualidade (0 a 1), penalizando
+        // conversoes, valores nos extremos, sensor bloqueado e timestamps implausiveis.
         private static LeituraProcessada Processar(
             LeituraBruta leitura, double valor, bool convertido,
             BatchFlags bf, TsFlags tf)

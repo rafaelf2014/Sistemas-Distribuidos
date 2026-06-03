@@ -9,17 +9,21 @@ partial class ServerCentral
 {
     #region CAMPOS STREAM
 
+    // IP e porta de comando de cada gateway, aprendidos no registo dos sensores.
     readonly ConcurrentDictionary<string, string> _gatewayIps   = new();
     readonly ConcurrentDictionary<string, int>    _gatewayPorts = new();
 
+    // Estado do stream atual (o servidor mostra um stream de cada vez).
     volatile string _streamingSensorId = null;
     volatile bool _streamingAtivo    = false;
     readonly int  _udpStreamPort     = 15000;
 
     #endregion
 
-    #region GESTÃO DE STREAM
+    #region GESTAO DE STREAM
 
+    // Pede ao gateway dono do sensor que inicie o stream (via TCP de comando) e arranca
+    // a thread que recebe os fotogramas por UDP.
     async Task IniciarStream(string sensorId)
     {
         if (_streamingAtivo) { RegistarLog("Já existe um stream ativo."); return; }
@@ -53,6 +57,7 @@ partial class ServerCentral
         catch (Exception ex) { RegistarLog($"Erro ao iniciar stream: {ex.Message}"); }
     }
 
+    // Pede ao gateway que pare o stream e limpa o estado local.
     void PararStream()
     {
         if (!_streamingAtivo || _streamingSensorId == null) return;
@@ -78,6 +83,7 @@ partial class ServerCentral
         RegistarLog($"[VIDEO] Stream de {sensorId} terminado.");
     }
 
+    // Recebe os fotogramas JPEG por UDP, descodifica-os e mostra-os numa janela OpenCV.
     void ReceberEMostrarStream(int udpPort)
     {
         UdpClient udp = null;
@@ -111,6 +117,7 @@ partial class ServerCentral
         }
     }
 
+    // Descobre o IP local a anunciar ao gateway (variavel de ambiente ou deteta pela rede).
     string ObterIpLocal()
     {
         string? configured = Environment.GetEnvironmentVariable("SERVER_IP");
