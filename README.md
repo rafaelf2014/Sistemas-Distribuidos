@@ -1,7 +1,5 @@
 # ONE HEALTH — Distributed Environmental Monitoring System
 
-Project developed for the **Distributed Systems** course.
-
 ONE HEALTH is a distributed system for real-time environmental monitoring. A network of
 sensors spread across geographic zones continuously measures several environmental variables
 (temperature, humidity, CO₂, noise, luminosity, particulate matter, NO₂, O₃ and wind). The
@@ -20,7 +18,9 @@ on a single machine or be distributed across several.
 
 ```
 [Sensors] ──AMQP──► [Gateways] ──gRPC──► [PreProcessamento]  (normalization)
+                         |
                          │      ──gRPC──► [ServicoAnalise]    (ML + statistics)
+                         |
                          │ TCP
                          ▼
                      [Server] ──► [PostgreSQL]
