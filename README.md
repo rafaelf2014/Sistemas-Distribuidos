@@ -1,4 +1,4 @@
-# ONE HEALTH — Distributed Environmental Monitoring System
+# ONE HEALTH: Distributed Environmental Monitoring System
 
 ONE HEALTH is a distributed system for real-time environmental monitoring. A network of
 sensors spread across geographic zones continuously measures several environmental variables
@@ -68,14 +68,14 @@ normalization.
 
 ## Features
 
-- **Multi-format ingestion** — five wire formats, with automatic detection and unit conversion
-- **Edge computing** — validation, normalization, scoring and alarms happen at the gateway, before central storage
-- **ML anomaly detection** — one Isolation Forest model per data type, trained from history and retrained periodically
-- **Analysis and forecasting** — per-zone statistics, pattern and trend detection, and short-horizon forecasting with a health-risk score
-- **Alarm system** — thresholds configurable per zone and type, with a cooldown window
-- **On-demand video streaming** — camera-capable sensors stream video over UDP, coordinated by the server and gateway
-- **Fault tolerance** — automatic reconnection to the broker and server, a persisted retry queue, and a sensor watchdog with heartbeat-based recovery
-- **Authentication** — REST API protected by JWT token
+- **Multi-format ingestion** - five wire formats, with automatic detection and unit conversion
+- **Edge computing** - validation, normalization, scoring and alarms happen at the gateway, before central storage
+- **ML anomaly detection** - one Isolation Forest model per data type, trained from history and retrained periodically
+- **Analysis and forecasting** - per-zone statistics, pattern and trend detection, and short-horizon forecasting with a health-risk score
+- **Alarm system** - thresholds configurable per zone and type, with a cooldown window
+- **On-demand video streaming** - camera-capable sensors stream video over UDP, coordinated by the server and gateway
+- **Fault tolerance** - automatic reconnection to the broker and server, a persisted retry queue, and a sensor watchdog with heartbeat-based recovery
+- **Authentication** - REST API protected by JWT token
 
 ---
 
@@ -106,8 +106,8 @@ configuration folder — no code changes.
 
 The PostgreSQL database has two main tables:
 
-- **`sensores`** — registry of each sensor (zone, types, status, video capability, last sync)
-- **`leituras`** — time series of all readings, with normalized value, quality, alarm flag and anomaly score
+- **`sensores`** - registry of each sensor (zone, types, status, video capability, last sync)
+- **`leituras`** - time series of all readings, with normalized value, quality, alarm flag and anomaly score
 
 ---
 
@@ -211,14 +211,14 @@ variables.
 
 ## Technologies
 
-- **C# / .NET** — sensors, gateways, server and pre-processing
-- **Python** — analysis service (gRPC, pandas, numpy, scikit-learn)
-- **React + TypeScript** — frontend (with Recharts)
-- **RabbitMQ** — message broker (AMQP)
-- **gRPC / Protocol Buffers** — inter-service communication
-- **PostgreSQL** — persistence (time series)
-- **OpenCV** — video capture and display, over UDP
-- **JWT** — REST API authentication
+- **C# / .NET** - sensors, gateways, server and pre-processing
+- **Python** - analysis service (gRPC, pandas, numpy, scikit-learn)
+- **React + TypeScript** - frontend (with Recharts)
+- **RabbitMQ** - message broker (AMQP)
+- **gRPC / Protocol Buffers** - inter-service communication
+- **PostgreSQL** - persistence (time series)
+- **OpenCV** - video capture and display, over UDP
+- **JWT** - REST API authentication
 
 ---
 
